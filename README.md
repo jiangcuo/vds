@@ -104,9 +104,16 @@ distribution's builder image:
 cargo deb -p vds-capi
 cargo deb -p vds-capi --variant dev --no-build
 ```
-The Proxmox VE QEMU package with `-rdp` is built from `jiangcuo/pve-qemu` branch `vds-pve8`
-(PVE 8) with the standard `apt update && mk-build-deps --install --remove && make deb` once
-`libvds-dev` is installed.
+The Proxmox VE QEMU package with `-rdp` is built from `jiangcuo/pve-qemu` with the standard
+`apt update && mk-build-deps --install --remove && make deb` once `libvds-dev` is installed:
+
+| PVE | pve-qemu branch | QEMU | builder image | QEMU fork branch the patches come from |
+|---|---|---|---|---|
+| 8 (bookworm) | `vds-pve8` (on `ramfb`) | 10.0.12 | `pxvirt-builder-bookworm` | `rdp` (v10.0.10) |
+| 9 (trixie) | `vds-pve9` (on `master`) | 11.1.1 | `pxvirt-builder-trixie` | `rdp-11` (v11.1.1) |
+
+The patches sit in `debian/patches/vds/` of each branch. QEMU 11 changed the audio backends
+(QOM types) and the console API, so the two patch sets differ in those places.
 
 ## Try it without QEMU
 
