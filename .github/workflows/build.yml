@@ -1,0 +1,147 @@
+name: build
+
+# Every push builds the libvds Debian packages for PVE 8 (bookworm) and PVE 9 (trixie), amd64
+# and arm64. The pve-qemu-kvm packages with -rdp take hours, so they are built only for tags
+# and manual runs. A newer push cancels the run still going on the same branch; tags have their
+# own ref and are never cancelled by branch pushes. Only tags publish a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      pve-qemu:
+        description: Also build pve-qemu-kvm with -rdp
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  vds-deb:
+    name: libvds ${{ matrix.suite }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    container: harbor.lierfang.com/pxvirt/pxvirt-builder-${{ matrix.suite }}:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [bookworm, trixie]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            /github/home/.rustup
+            /github/home/.cargo/bin
+            /github/home/.cargo/registry
+            /github/home/.cargo/git
+            target
+          key: vds-${{ matrix.suite }}-${{ matrix.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: vds-${{ matrix.suite }}-${{ matrix.arch }}-
+
+      - name: Build libvds0 and libvds-dev
+        run: .github/scripts/build-vds-deb.sh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libvds-${{ matrix.suite }}-${{ matrix.arch }}
+          path: out/*.deb
+
+  pve-qemu:
+    name: pve-qemu ${{ matrix.suite }} ${{ matrix.arch }}
+    needs: vds-deb
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.pve-qemu)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [bookworm, trixie]
+        arch: [amd64, arm64]
+        include:
+          - suite: bookworm
+            pve: 8
+            branch: vds-pve8
+          - suite: trixie
+            pve: 9
+            branch: vds-pve9
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      # A full QEMU package build needs well over the ~14 GB a runner has free.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+            /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+          sudo docker image prune -af
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          path: vds
+
+      - uses: actions/checkout@v4
+        with:
+          repository: jiangcuo/pve-qemu
+          ref: ${{ matrix.branch }}
+          path: pve-qemu
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: libvds-${{ matrix.suite }}-${{ matrix.arch }}
+          path: libvds
+
+      - name: Build pve-qemu-kvm
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work \
+            harbor.lierfang.com/pxvirt/pxvirt-builder-${{ matrix.suite }}:latest \
+            bash /work/vds/.github/scripts/build-pve-qemu.sh /work/pve-qemu /work/libvds
+
+      # The dbgsym package (hundreds of MB) stays out of the bundle.
+      - name: Bundle
+        run: |
+          mkdir bundle
+          cp libvds/*.deb bundle/
+          sudo cp pve-qemu/pve-qemu-kvm_*.deb bundle/
+          name="vds-pve${{ matrix.pve }}-${{ matrix.arch }}"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then name="$name-$GITHUB_REF_NAME"; fi
+          tar -C bundle -czf "$name.tar.gz" .
+          ls -la "$name.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vds-pve${{ matrix.pve }}-${{ matrix.arch }}
+          path: vds-pve*.tar.gz
+
+  release:
+    needs: pve-qemu
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vds-pve*
+          merge-multiple: true
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
