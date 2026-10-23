@@ -1,0 +1,5 @@
+# Keep in sync with IronRDP's toolchain (see docs/spec/rust-style.md).
+[toolchain]
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-gnu"]

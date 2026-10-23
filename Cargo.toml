@@ -1,0 +1,91 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/vds-core",
+  "crates/vds-encode",
+  "crates/vds-rdp",
+  "crates/vds-capi",
+  "crates/vds-test-host",
+  "tools/vds-demo",
+  "tools/vds-bench",
+  "tools/vds-rdcleanpath",
+  "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# All dependencies are declared here; new ones need approval (AGENTS.md).
+[workspace.dependencies]
+vds-core = { path = "crates/vds-core" }
+vds-encode = { path = "crates/vds-encode" }
+vds-rdp = { path = "crates/vds-rdp" }
+vds-test-host = { path = "crates/vds-test-host" }
+
+# IronRDP: upstream Devolutions/IronRDP master. Server-side USB/audio-input/touch
+# factories are not in a crates.io release yet (ironrdp-server 0.13.0).
+ironrdp-server = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8", default-features = false, features = ["egfx", "rayon"] }
+ironrdp-egfx = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-pdu = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-core = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-cliprdr = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-rdpsnd = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-displaycontrol = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-dvc = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-svc = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+# RDCleanPath PDUs for the web-client bridge (tools/vds-rdcleanpath, approved 2026-10-22).
+ironrdp-rdcleanpath = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+# Test-only: IronRDP client stack for end-to-end tests.
+ironrdp = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8", features = ["connector", "session", "dvc", "pdu"] }
+ironrdp-async = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8" }
+ironrdp-tokio = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8", features = ["reqwest"] }
+ironrdp-tls = { git = "https://github.com/Devolutions/IronRDP.git", rev = "15bed4ee0ebef4b851c024edfcd4b1675d6e9ee8", features = ["rustls"] }
+
+tokio = { version = "1.47", features = ["rt", "net", "sync", "time", "macros", "io-util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "ansi"] }
+thiserror = "2"
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+parking_lot = "0.12"
+zeroize = "1.8"
+x509-cert = "0.2"
+tokio-rustls = "0.26"
+rcgen = { version = "0.13", default-features = false, features = ["aws_lc_rs", "pem"] }
+cc = "1.2"
+# H.264 software encoder (openh264-rs fork), built from source.
+openh264 = { git = "https://gitea.lierfang.com/pxcloud/openh264-rs", rev = "57fbea1b1cfcf0c36530feceb07bed608bdabdab" }
+# SIMD colour conversion (yuvutils-rs fork, adds LoongArch kernels).
+yuv = { git = "https://github.com/jiangcuo/yuvutils-rs-loongarch.git", rev = "e9e3f80bd27cc78db105ee17d8da83497f9d97f5" }
+pkg-config = "0.3"
+# Clipboard images: CF_DIB <-> PNG (approved 2026-10-22).
+png = "0.18"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+# Errors and panics (docs/spec/rust-style.md, section 4)
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+# Logging (docs/spec/logging.md)
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# unsafe (docs/spec/rust-style.md, section 5)
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+# Lint suppression must use #[expect(..., reason = "...")]
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"

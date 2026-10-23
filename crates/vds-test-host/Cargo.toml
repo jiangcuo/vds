@@ -1,0 +1,16 @@
+[package]
+name = "vds-test-host"
+description = "Synthetic host for libvds: animated test pattern, no QEMU required"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vds-core.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[lints]
+workspace = true

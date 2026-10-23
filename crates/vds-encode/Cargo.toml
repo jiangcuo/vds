@@ -1,0 +1,27 @@
+[package]
+name = "vds-encode"
+description = "Video encoding for libvds: openh264, optional VA-API, and BGRX to I420 conversion"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[features]
+# FFmpeg h264_vaapi with GPU colour conversion (Linux only; needs libavcodec, libavutil, libva).
+vaapi = []
+
+[dependencies]
+vds-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+yuv.workspace = true
+openh264.workspace = true
+
+[build-dependencies]
+cc.workspace = true
+pkg-config.workspace = true
+
+[lints]
+workspace = true

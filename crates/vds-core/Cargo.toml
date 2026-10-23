@@ -1,0 +1,22 @@
+[package]
+name = "vds-core"
+description = "Protocol-independent core of libvds: display state, input events, sessions, credentials"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+parking_lot.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

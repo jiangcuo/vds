@@ -1,0 +1,48 @@
+[package]
+name = "vds-rdp"
+description = "RDP protocol backend of libvds, built on IronRDP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# H.264 on the GPU through VA-API (Linux), see vds-encode.
+vaapi = ["vds-encode/vaapi"]
+
+[dependencies]
+vds-core.workspace = true
+vds-encode.workspace = true
+ironrdp-server.workspace = true
+ironrdp-egfx.workspace = true
+ironrdp-pdu.workspace = true
+ironrdp-core.workspace = true
+ironrdp-cliprdr.workspace = true
+ironrdp-rdpsnd.workspace = true
+ironrdp-displaycontrol.workspace = true
+ironrdp-dvc.workspace = true
+ironrdp-svc.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+bytes.workspace = true
+x509-cert.workspace = true
+rcgen.workspace = true
+tokio-rustls.workspace = true
+png.workspace = true
+
+[dev-dependencies]
+vds-test-host.workspace = true
+ironrdp.workspace = true
+ironrdp-async.workspace = true
+ironrdp-tokio.workspace = true
+ironrdp-tls.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "vds-rdcleanpath"
+description = "RDCleanPath bridge between a web RDP client (IronRDP web) and an RDP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+ironrdp-rdcleanpath.workspace = true
+ironrdp-pdu.workspace = true
+ironrdp-tls.workspace = true
+tokio = { workspace = true, features = ["io-std", "rt-multi-thread"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

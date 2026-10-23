@@ -1,0 +1,26 @@
+[package]
+name = "vds-capi"
+description = "C ABI of libvds (include/vds.h)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "vds"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# H.264 on the GPU through VA-API (Linux), see vds-encode.
+vaapi = ["vds-rdp/vaapi"]
+
+[dependencies]
+vds-core.workspace = true
+vds-rdp.workspace = true
+vds-encode.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[lints]
+workspace = true
