@@ -26,7 +26,7 @@ jobs:
   vds-deb:
     name: libvds ${{ matrix.suite }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    container: harbor.lierfang.com/pxvirt/pxvirt-builder-${{ matrix.suite }}:latest
+    container: pxvirt/pxvirt-builder-${{ matrix.suite }}:latest
     strategy:
       fail-fast: false
       matrix:
@@ -110,7 +110,7 @@ jobs:
       - name: Build pve-qemu-kvm
         run: |
           docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work \
-            harbor.lierfang.com/pxvirt/pxvirt-builder-${{ matrix.suite }}:latest \
+            pxvirt/pxvirt-builder-${{ matrix.suite }}:latest \
             bash /work/vds/.github/scripts/build-pve-qemu.sh /work/pve-qemu /work/libvds
 
       # The dbgsym package (hundreds of MB) stays out of the bundle.
