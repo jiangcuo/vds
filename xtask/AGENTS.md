@@ -9,7 +9,7 @@
 ```text
 cargo run -p xtask -- gen-abi              # 用 cbindgen 重新生成 include/vds.h
 cargo run -p xtask -- check-abi            # include/vds.h 过期时失败
-cargo run -p xtask -- install --prefix DIR # release 构建 + 头文件 + vds-1.pc
+cargo run -p xtask -- install --prefix DIR # release 构建，装 libvds.so 和 libvds.so.0（SONAME）+ 头文件 + vds-1.pc
 cargo run -p xtask -- c-smoke              # 编译并运行 C ABI 冒烟测试
 ```
 

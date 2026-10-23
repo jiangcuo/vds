@@ -102,6 +102,8 @@ fn install(prefix: &Path) -> Result<()> {
         install_file(&out.join("vds.dll"), &bin.join("vds.dll"), &mut failures);
         install_file(&out.join("libvds.dll.a"), &lib.join("libvds.dll.a"), &mut failures);
     } else {
+        // The SONAME is libvds.so.0 (vds-capi/build.rs): programs load that name at run time.
+        install_file(&out.join("libvds.so"), &lib.join("libvds.so.0"), &mut failures);
         install_file(&out.join("libvds.so"), &lib.join("libvds.so"), &mut failures);
     }
     install_file(&root().join("include/vds.h"), &include.join("vds.h"), &mut failures);

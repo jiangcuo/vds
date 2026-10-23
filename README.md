@@ -97,6 +97,17 @@ cargo run -p xtask -- install --prefix "$HOME/vds-prefix"
 Windows hosts build the same way from an MSYS2 UCRT64 shell (toolchain
 `1.94.1-x86_64-pc-windows-gnu`, no `vaapi` feature).
 
+Debian packages (`libvds0`, `libvds-dev`; SONAME `libvds.so.0`), built inside the target
+distribution's builder image:
+
+```bash
+cargo deb -p vds-capi
+cargo deb -p vds-capi --variant dev --no-build
+```
+The Proxmox VE QEMU package with `-rdp` is built from `jiangcuo/pve-qemu` branch `vds-pve8`
+(PVE 8) with the standard `apt update && mk-build-deps --install --remove && make deb` once
+`libvds-dev` is installed.
+
 ## Try it without QEMU
 
 ```bash
