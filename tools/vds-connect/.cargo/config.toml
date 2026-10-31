@@ -1,0 +1,20 @@
+# Single self-contained binaries: no MinGW runtime DLLs on Windows, static musl on Linux.
+[target.i686-pc-windows-gnu]
+linker = "i686-w64-mingw32-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-unknown-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-unknown-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.riscv64gc-unknown-linux-musl]
+linker = "riscv64-unknown-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.loongarch64-unknown-linux-musl]
+linker = "loongarch64-unknown-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]

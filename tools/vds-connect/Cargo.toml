@@ -1,0 +1,27 @@
+[package]
+name = "vds-connect"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Opens .vds connection files: runs FreeRDP, tunnelling RDP through a WebSocket when needed"
+
+# Standalone tool, outside the libvds workspace: it keeps its own older toolchain
+# (rust-toolchain.toml) so the Windows build still runs on Windows 7.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+# SHA-256 fingerprints, SHA-1 of the WebSocket handshake, random keys and masks.
+ring = "0.17"
+# TLS of wss:// URLs (the Windows 7 TLS stack lacks TLS 1.3).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+strip = true
