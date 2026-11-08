@@ -15,6 +15,8 @@ pub struct TlsIdentity {
     pub(crate) acceptor: TlsAcceptor,
     /// Subject public key of the leaf certificate (CredSSP binds the session to it).
     pub(crate) public_key: Vec<u8>,
+    /// SHA-256 of the leaf certificate, as uppercase hex bytes separated by `:`.
+    fingerprint: String,
 }
 
 impl core::fmt::Debug for TlsIdentity {
@@ -24,6 +26,11 @@ impl core::fmt::Debug for TlsIdentity {
 }
 
 impl TlsIdentity {
+    /// SHA-256 fingerprint of the leaf certificate (`AA:BB:…`), as clients pin it.
+    pub fn fingerprint(&self) -> &str {
+        &self.fingerprint
+    }
+
     /// Builds an identity from a PEM certificate chain and a PEM private key
     /// (PKCS#8, PKCS#1 or SEC1).
     pub fn from_pem(cert_pem: &[u8], key_pem: &[u8]) -> Result<Self> {
@@ -64,6 +71,21 @@ impl TlsIdentity {
                 .ok_or_else(|| Error::Tls(String::from("unaligned subject public key")))?
                 .to_owned()
         };
+        let fingerprint = {
+            // rustls does not export its SHA-256 on its own; take it from a SHA-256 suite.
+            let sha256 = rustls::crypto::aws_lc_rs::cipher_suite::TLS13_AES_128_GCM_SHA256
+                .tls13()
+                .ok_or_else(|| Error::Tls(String::from("SHA-256 suite unavailable")))?
+                .common
+                .hash_provider;
+            let digest = sha256.hash(leaf.as_ref());
+            digest
+                .as_ref()
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<Vec<_>>()
+                .join(":")
+        };
         // One explicit provider: rcgen and tokio-rustls both use aws-lc-rs, so there is no
         // process-wide default to rely on.
         let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
@@ -76,6 +98,7 @@ impl TlsIdentity {
         Ok(Self {
             acceptor: TlsAcceptor::from(Arc::new(config)),
             public_key,
+            fingerprint,
         })
     }
 }
@@ -88,6 +111,8 @@ mod tests {
     fn self_signed_identity_has_public_key() {
         let id = TlsIdentity::self_signed("localhost").unwrap();
         assert!(!id.public_key.is_empty());
+        // 32 bytes as `XX:` groups.
+        assert_eq!(id.fingerprint().len(), 32 * 3 - 1);
     }
 
     #[test]

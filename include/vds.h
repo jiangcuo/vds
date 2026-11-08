@@ -526,7 +526,8 @@ VdsServer *vds_server_new(const VdsConfig *cfg, const VdsCallbacks *cb, void *op
 
 /*
  Sets the TLS certificate chain and private key (PEM). Applies to new connections.
- Without it, a self-signed certificate is generated when the server starts. `[main-thread]`
+ Without it, a self-signed certificate is generated when the server starts or its
+ fingerprint is first queried. `[main-thread]`
 
  # Safety
  `server` must be a valid server; the PEM strings NUL-terminated; `err` NULL or writable.
@@ -535,6 +536,19 @@ int32_t vds_server_set_tls(VdsServer *server,
                            const char *cert_pem,
                            const char *key_pem,
                            char **err);
+
+/*
+ Returns the SHA-256 fingerprint of the TLS certificate served to clients, as uppercase
+ hex bytes separated by `:` (`AA:BB:…`). Without `vds_server_set_tls()`, the self-signed
+ certificate is generated now and kept for the server. Free the string with
+ `vds_free_string()`. `[main-thread]`
+
+ Returns NULL on error, with a message in `*err`.
+
+ # Safety
+ `server` must be valid; `err` NULL or writable.
+ */
+char *vds_server_tls_fingerprint(VdsServer *server, char **err);
 
 /*
  Listens on `addr`:`port` (`addr` NULL = all IPv4 interfaces, port 0 = any free port).
@@ -606,7 +620,8 @@ void vds_server_free(VdsServer *server);
  Frees a string returned by libvds. `[any-thread]`
 
  # Safety
- `s` must be NULL or a string returned through a `char **err` parameter.
+ `s` must be NULL or a string returned by libvds (a `char **err` message or
+ `vds_server_tls_fingerprint()`).
  */
 void vds_free_string(char *s);
 

@@ -23,7 +23,7 @@ IronRDP 的 API 以 `Cargo.lock` 锁定的 rev 源码为准。
 | `sound` | rdpsnd：48 kHz/16 位/立体声；宿主的 PCM 打包成 10 ms 的 wave，环形缓冲预先分配；新流先攒 60 ms 预缓冲，100 ms 没有数据就重新预缓冲；同一批就绪的 wave 合并成一个事件发出（IronRDP 每批只保留 4 个 wave，逐个发会被丢掉，表现为杂音）；积压超过 200 ms 丢弃 |
 | `clipboard` / `clipboard_image` | cliprdr：文本（`CF_UNICODETEXT`）和图片。向客户端提供注册格式 "PNG"、"image/png" 和 `CF_DIB`；从客户端优先取 PNG 格式，否则把 `CF_DIB` 转成 PNG。图片转换在短命线程上做，不阻塞宿主主线程或会话任务 |
 | `client_info` | 连接时客户端信息与已打开的通道，写进 `client.json` |
-| `tls` | `TlsIdentity`：证书链、私钥、CredSSP 用的公钥；未配置证书时用 rcgen 生成自签证书 |
+| `tls` | `TlsIdentity`：证书链、私钥、CredSSP 用的公钥、证书 SHA-256 指纹（`AA:BB:…`）；未配置证书时用 rcgen 生成自签证书 |
 | `error` | 错误类型 |
 
 ## 线程

@@ -12,7 +12,7 @@ libvds 唯一的对外接口：C ABI。编译出 `libvds.so`（Windows 上 `vds.
 |---|---|
 | `lib` | ABI 版本常量（`VDS_ABI_MAJOR`/`MINOR`）、`ffi_guard!`、线程标注说明（`[any-thread]`、`[main-thread]`、`[callback]`） |
 | `types` | 纯 C 类型：`VdsConfig`、`VdsCallbacks`、`VdsRect`、`VdsMonitor`、`VdsClientInfo`、各类常量（`VDS_CODEC_*`、`VDS_CLIPBOARD_TEXT/PNG`、`VDS_AUTH_*` 等）、`VdsReleaseFn` |
-| `api` | 所有 `extern "C"` 函数：服务器生命周期（`vds_server_new`/`listen`/`add_client`/`dispatch`/`disconnect_all`/`free`）、密码与过期、TLS、客户端列表、`vds_server_wants_frame`、显示头（`vds_head_add`/`resize`/`submit`/`attach_shared`/`damage`/`remove`）、光标、音频、剪贴板、日志、调试目录；`VdsConfig` 解析成 `ServerConfig`（编码器名 `openh264`/`vaapi`、渲染节点等） |
+| `api` | 所有 `extern "C"` 函数：服务器生命周期（`vds_server_new`/`listen`/`add_client`/`dispatch`/`disconnect_all`/`free`）、密码与过期、TLS（`vds_server_set_tls`；`vds_server_tls_fingerprint` 返回证书指纹，未配置证书时当场生成自签证书并保留，供之后启动的服务器使用）、客户端列表、`vds_server_wants_frame`、显示头（`vds_head_add`/`resize`/`submit`/`attach_shared`/`damage`/`remove`）、光标、音频、剪贴板、日志、调试目录；`VdsConfig` 解析成 `ServerConfig`（编码器名 `openh264`/`vaapi`、渲染节点等） |
 
 ## 打包
 

@@ -161,15 +161,22 @@ impl VdsServer {
         if rdp.is_some() {
             return Ok(());
         }
-        let tls = match self.tls.lock().clone() {
-            Some(t) => t,
-            None => {
-                warn!("no TLS certificate configured, generating a self-signed one");
-                TlsIdentity::self_signed("localhost").map_err(|e| e.to_string())?
-            }
-        };
+        let tls = self.tls_identity()?;
         *rdp = Some(RdpServer::start(self.core.clone(), tls).map_err(|e| e.to_string())?);
         Ok(())
+    }
+
+    /// The configured TLS identity, or a self-signed one generated once and kept, so the
+    /// fingerprint reported before the server starts is the one it serves.
+    fn tls_identity(&self) -> Result<TlsIdentity, String> {
+        let mut tls = self.tls.lock();
+        if let Some(t) = tls.as_ref() {
+            return Ok(t.clone());
+        }
+        warn!("no TLS certificate configured, generating a self-signed one");
+        let t = TlsIdentity::self_signed("localhost").map_err(|e| e.to_string())?;
+        *tls = Some(t.clone());
+        Ok(t)
     }
 
     fn dispatch(&self) {
@@ -502,7 +509,8 @@ pub unsafe extern "C" fn vds_server_new(
 }
 
 /// Sets the TLS certificate chain and private key (PEM). Applies to new connections.
-/// Without it, a self-signed certificate is generated when the server starts. `[main-thread]`
+/// Without it, a self-signed certificate is generated when the server starts or its
+/// fingerprint is first queried. `[main-thread]`
 ///
 /// # Safety
 /// `server` must be a valid server; the PEM strings NUL-terminated; `err` NULL or writable.
@@ -541,6 +549,35 @@ pub unsafe extern "C" fn vds_server_set_tls(
         }
         *s.tls.lock() = Some(tls);
         VDS_OK
+    })
+}
+
+/// Returns the SHA-256 fingerprint of the TLS certificate served to clients, as uppercase
+/// hex bytes separated by `:` (`AA:BB:…`). Without `vds_server_set_tls()`, the self-signed
+/// certificate is generated now and kept for the server. Free the string with
+/// `vds_free_string()`. `[main-thread]`
+///
+/// Returns NULL on error, with a message in `*err`.
+///
+/// # Safety
+/// `server` must be valid; `err` NULL or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vds_server_tls_fingerprint(server: *mut VdsServer, err: *mut *mut c_char) -> *mut c_char {
+    ffi_guard!(core::ptr::null_mut(), {
+        // SAFETY: per the function contract.
+        let Some(s) = (unsafe { as_server(server) }) else {
+            // SAFETY: `err` per the function contract.
+            unsafe { set_err(err, "invalid server") };
+            return core::ptr::null_mut();
+        };
+        match s.tls_identity() {
+            Ok(tls) => CString::new(tls.fingerprint()).map_or(core::ptr::null_mut(), CString::into_raw),
+            Err(e) => {
+                // SAFETY: `err` per the function contract.
+                unsafe { set_err(err, e) };
+                core::ptr::null_mut()
+            }
+        }
     })
 }
 
@@ -742,12 +779,13 @@ pub unsafe extern "C" fn vds_server_free(server: *mut VdsServer) {
 /// Frees a string returned by libvds. `[any-thread]`
 ///
 /// # Safety
-/// `s` must be NULL or a string returned through a `char **err` parameter.
+/// `s` must be NULL or a string returned by libvds (a `char **err` message or
+/// `vds_server_tls_fingerprint()`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vds_free_string(s: *mut c_char) {
     ffi_guard!((), {
         if !s.is_null() {
-            // SAFETY: the string came from `CString::into_raw` in `set_err`.
+            // SAFETY: libvds returns strings from `CString::into_raw`.
             drop(unsafe { CString::from_raw(s) });
         }
     })
