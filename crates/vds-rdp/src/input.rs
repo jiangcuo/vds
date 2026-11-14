@@ -172,6 +172,56 @@ impl Sas {
     }
 }
 
+/// Keys and mouse buttons a client holds down in the guest.
+///
+/// With several clients on the VM, a client that goes away while holding Ctrl or a mouse
+/// button would leave it held for everybody: its session releases them when it ends.
+#[derive(Debug, Default)]
+pub(crate) struct HeldInput {
+    keys: Vec<(u8, bool)>,
+    buttons: Vec<MouseButton>,
+}
+
+impl HeldInput {
+    /// Follows an event the client sends to the guest.
+    fn note(&mut self, ev: &ClientEvent) {
+        match *ev {
+            ClientEvent::Key {
+                scancode,
+                extended,
+                down,
+            } => {
+                let key = (scancode, extended);
+                self.keys.retain(|k| *k != key);
+                if down {
+                    self.keys.push(key);
+                }
+            }
+            ClientEvent::Button { button, down } => {
+                self.buttons.retain(|b| *b != button);
+                if down {
+                    self.buttons.push(button);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The releases of everything still held, emptying the record.
+    pub(crate) fn release(&mut self) -> Vec<ClientEvent> {
+        let keys = self.keys.drain(..).map(|(scancode, extended)| ClientEvent::Key {
+            scancode,
+            extended,
+            down: false,
+        });
+        let buttons = self
+            .buttons
+            .drain(..)
+            .map(|button| ClientEvent::Button { button, down: false });
+        keys.chain(buttons).collect()
+    }
+}
+
 pub(crate) struct InputHandler {
     shared: Arc<SessionShared>,
     wheel: Wheel,
@@ -188,6 +238,7 @@ impl InputHandler {
     }
 
     fn push(&self, ev: ClientEvent) {
+        self.shared.held_input.lock().note(&ev);
         self.shared.core.push_event(ev);
     }
 
@@ -385,9 +436,9 @@ impl RdpServerInputHandler for InputHandler {
 mod tests {
     use vds_core::config::SasHotkey;
     use vds_core::display::HeadLayout;
-    use vds_core::event::ClientEvent;
+    use vds_core::event::{ClientEvent, MouseButton};
 
-    use super::{Sas, key_kind, key_row, map_to_head};
+    use super::{HeldInput, Sas, key_kind, key_row, map_to_head};
 
     fn layout() -> Vec<HeadLayout> {
         vec![
@@ -617,5 +668,37 @@ mod tests {
             ),
             vec![0x4f, 0x1d, 0x38, 0x4f]
         );
+    }
+
+    /// A client that leaves releases what it held, once, and nothing it already let go.
+    #[test]
+    fn held_input_is_released_once() {
+        let key = |scancode, extended, down| ClientEvent::Key {
+            scancode,
+            extended,
+            down,
+        };
+        let mut held = HeldInput::default();
+        held.note(&key(0x1d, false, true));
+        held.note(&key(0x1d, false, true));
+        held.note(&key(0x38, true, true));
+        held.note(&key(0x1e, false, true));
+        held.note(&key(0x1e, false, false));
+        held.note(&ClientEvent::Button {
+            button: MouseButton::Left,
+            down: true,
+        });
+        assert_eq!(
+            held.release(),
+            vec![
+                key(0x1d, false, false),
+                key(0x38, true, false),
+                ClientEvent::Button {
+                    button: MouseButton::Left,
+                    down: false
+                },
+            ]
+        );
+        assert!(held.release().is_empty());
     }
 }

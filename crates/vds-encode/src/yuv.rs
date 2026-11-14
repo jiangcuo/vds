@@ -227,6 +227,7 @@ mod tests {
             height: h,
             stride: w as usize * 4,
             pixels: px,
+            gpu: None,
         }
     }
 
@@ -314,6 +315,7 @@ mod tests {
             height: 16,
             stride: 64,
             pixels: &px,
+            gpu: None,
         };
         assert!(f.convert(&src, Rect::new(0, 0, 16, 16)).is_err());
     }

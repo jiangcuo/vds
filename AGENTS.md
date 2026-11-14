@@ -26,7 +26,11 @@
 - 只做**进程内** `-rdp`。**不使用 D-Bus**，不引入 zbus/dbus/gio-dbus。
 - 库用 **Rust** 写，只对外暴露 **C ABI**（`vds.h`）。RDP 协议栈用 **IronRDP**。
 - 默认视频编码器是 **openh264**（自家 openh264-rs fork）；**可选** FFmpeg `h264_vaapi`（只在 Linux、`vaapi` feature，经 C shim）。不用 GStreamer，不做其它硬件编码（NVENC/QSV/AMF/MF 禁止）。码率用质量模式（动态码率），不用 CBR。
-- **libvds 的显示入口只收 CPU 像素**：GL 画面由 QEMU 前端回读到 CPU 后再交给库；唯一例外是可选的 VA-API 编码器打开渲染节点。QEMU 能共享的 surface 用 `vds_head_attach_shared` 直接读，不在主线程拷贝。
+- **libvds 的显示入口收 CPU 像素**；QEMU 能共享的 surface 用 `vds_head_attach_shared` 直接读，不在主线程拷贝。
+  另外（2026-11-12 人类批准）：Linux 上、`vaapi` feature 打开且 `encoder=vaapi` 时，可以收 GPU 缓冲区（dmabuf，
+  `vds_head_attach_dmabuf`），只在 `vds-encode::vaapi` 里通过 VA-API 访问它（导入、VPP、编码），不调用 EGL/GL。
+  需要 CPU 像素的消费方（openh264、legacy、ClearCodec）经 `head_input` 回调让宿主改交 CPU 像素，画面不能中断。
+  设计见 `docs/design/gl-dmabuf.md`。
 - 编码由协商决定，顺序固定：**EGFX AVC420 → RemoteFX → bitmap**。不做 AVC444，不启用 QOI/QOIZ。
 - 网页客户端用 IronRDP web（iron-remote-desktop），经 RDCleanPath 接入：`tools/vds-rdcleanpath` 做握手和 TLS，
   WebSocket 由外部（PVE 的 pveproxy，测试时 websockify）终结；桥接程序只连配置好的目标，不接受客户端指定的地址。

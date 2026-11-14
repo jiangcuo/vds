@@ -43,6 +43,11 @@
 #define VDS_E_STATE -3
 
 /*
+ The host or the build cannot take this kind of input (e.g. a GPU buffer without VA-API).
+ */
+#define VDS_E_UNSUPPORTED -4
+
+/*
  Internal error (a bug in libvds; the event is logged).
  */
 #define VDS_E_INTERNAL -100
@@ -193,6 +198,16 @@
 #define VDS_SAS_OFF 1
 
 /*
+ `VdsConfig::share`: every client sees the display and drives the guest (default).
+ */
+#define VDS_SHARE_FORCE_SHARED 0
+
+/*
+ `VdsConfig::share`: a client that finishes connecting disconnects the others.
+ */
+#define VDS_SHARE_EXCLUSIVE 1
+
+/*
  A display head (opaque).
  */
 typedef struct VdsHead VdsHead;
@@ -294,6 +309,15 @@ typedef struct {
    pick one. Copied by `vds_server_new()`. Since ABI 1.6.
    */
   const char *render_node;
+  /*
+   `VDS_SHARE_*`: whether clients share the VM or replace each other.
+   */
+  uint32_t share;
+  /*
+   Connections at the same time (1..=64), those still connecting included; more are
+   refused. 0 = default (32).
+   */
+  uint32_t max_connections;
 } VdsConfig;
 
 /*
@@ -456,12 +480,14 @@ typedef struct {
    Client lifecycle (`VDS_CLIENT_*`); `reason` is non-NULL only for disconnections.
    */
   void (*client_state)(void *opaque, const VdsClientInfo *info, uint32_t state, const char *reason);
+  /*
+   How head `index` must be handed over: `cpu` = CPU pixels (`vds_head_submit()` or
+   `vds_head_attach_shared()`), because a client or the encoder cannot read GPU buffers;
+   `!cpu` = GPU buffers (`vds_head_attach_dmabuf()`) may be attached again. `reason` is for
+   logs.
+   */
+  void (*head_input)(void *opaque, uint32_t index, bool cpu, const char *reason);
 } VdsCallbacks;
-
-/*
- Gives a host buffer back to the host (`vds_head_attach_shared()`). `[any-thread callback]`
- */
-typedef void (*VdsReleaseFn)(void *opaque);
 
 /*
  A rectangle in pixels.
@@ -484,6 +510,51 @@ typedef struct {
    */
   uint32_t h;
 } VdsRect;
+
+/*
+ Gives a host buffer back to the host (`vds_head_attach_shared()`). `[any-thread callback]`
+ */
+typedef void (*VdsReleaseFn)(void *opaque);
+
+/*
+ A GPU buffer (dmabuf) the host scans out, for `vds_head_attach_dmabuf()`. Linux only.
+ */
+typedef struct {
+  /*
+   The dmabuf file descriptor; libvds duplicates it, the host keeps its own.
+   */
+  int32_t fd;
+  /*
+   Width in pixels: the head's width.
+   */
+  uint32_t width;
+  /*
+   Height in pixels: the head's height.
+   */
+  uint32_t height;
+  /*
+   Bytes per row.
+   */
+  uint32_t stride;
+  /*
+   `DRM_FORMAT_*` fourcc (`XRGB8888`, `ARGB8888`, `XBGR8888` or `ABGR8888`).
+   */
+  uint32_t fourcc;
+  /*
+   `DRM_FORMAT_MOD_*`; `DRM_FORMAT_MOD_INVALID` for the driver's implicit layout.
+   */
+  uint64_t modifier;
+  /*
+   The rows are stored bottom-up (QEMU's `y0_top`): libvds flips the picture.
+   */
+  bool y0_top;
+} VdsDmabuf;
+
+/*
+ libvds has read the GPU buffer for the damage reported so far (`vds_head_attach_dmabuf()`):
+ the host may let the guest draw into it again. `[any-thread callback]`
+ */
+typedef void (*VdsConsumedFn)(void *opaque);
 
 #ifdef __cplusplus
 extern "C" {
@@ -727,8 +798,47 @@ int32_t vds_head_attach_shared(VdsHead *head,
                                void *opaque);
 
 /*
+ Makes the head show the GPU buffer `buf` (a dmabuf) instead of CPU pixels. The host then
+ reports changes with `vds_head_damage()`. `[main-thread]`
+
+ Only the VA-API encoder reads GPU buffers, without copying them to the CPU; the first call
+ opens the VA-API device (`VdsConfig.render_node`, which must be the GPU that renders the
+ buffer) and every call checks that this buffer can be imported. When the build, the
+ platform, the configured encoder or the device cannot use it, returns `VDS_E_UNSUPPORTED`
+ with the reason in `*err`, and the host keeps handing over CPU pixels. The size must be the
+ head's (`vds_head_resize()` first).
+
+ libvds duplicates `buf->fd`. After each `vds_head_damage()`, once libvds has read the buffer
+ (or will not), it calls `consumed(opaque)` once, from any thread: a host that stops the
+ guest from drawing until then gets no torn frames. A later attach, `vds_head_detach()`,
+ `vds_head_submit()`, `vds_head_attach_shared()`, a resize or a removal lets the buffer go
+ (calling `consumed` if the host still waits); a frame the encoder already took may still
+ call `consumed` after that, so `opaque` must stay valid (or be a plain value such as the
+ head index). A client or encoder that cannot read GPU buffers asks for CPU pixels through
+ the `head_input` callback.
+
+ # Safety
+ `head` must be valid; `buf` readable, with `buf->fd` open during the call; `consumed` NULL
+ or callable from any thread; `err` NULL or writable.
+ */
+int32_t vds_head_attach_dmabuf(VdsHead *head,
+                               const VdsDmabuf *buf,
+                               VdsConsumedFn consumed,
+                               void *opaque,
+                               char **err);
+
+/*
+ Lets the head's host or GPU buffer go: the head shows black until the next submit or
+ attach. `[any-thread]`
+
+ # Safety
+ `head` must be valid.
+ */
+int32_t vds_head_detach(VdsHead *head);
+
+/*
  Reports damaged `rects` of the head without copying pixels: libvds reads them from the
- buffer given to `vds_head_attach_shared()`. `[any-thread]`
+ buffer given to `vds_head_attach_shared()` or `vds_head_attach_dmabuf()`. `[any-thread]`
 
  # Safety
  `head` must be valid; `rects` readable for `count` entries.

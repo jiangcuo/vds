@@ -13,15 +13,15 @@ IronRDP 的 API 以 `Cargo.lock` 锁定的 rev 源码为准。
 | 模块 | 内容 |
 |---|---|
 | `lib` | `RdpServer`：在独立线程上跑 tokio runtime + `LocalSet`（IronRDP 的连接 future 不是 `Send`） |
-| `manager` | 监听与接受连接、持有会话；最多 `MAX_SESSIONS`（8）个，停止时等待 `SHUTDOWN_GRACE` |
+| `manager` | 监听与接受连接、持有会话；最多 `max_connections`（`connections=`，默认 32，握手中的也算）个，超过直接拒绝；`share=exclusive` 时新客户端激活后断开其他会话，默认 `force-shared` 不断开；停止时等待 `SHUTDOWN_GRACE` |
 | `session` | 一个客户端连接：每个连接新建一个 `ironrdp_server::RdpServer`，保证上一个客户端排队的事件（尤其 EGFX 帧）不会漏给新客户端；`SessionShared` 是会话内各后端共享的状态（事件发送端、传输方式、剪贴板状态等），实现 `SessionSink` |
-| `display` | `RdpServerDisplay`：编码选择（`vds_core::codec::select`，等待 EGFX 的宽限期 `egfx_grace_ms`）、legacy 路径（RemoteFX/bitmap，宽度按 4 对齐）、光标更新（形状发 RGBA 指针，无形状或隐藏时发透明指针）、DisplayControl 布局请求 |
-| `egfx` | EGFX AVC420：每会话一个视频线程处理所有显示头；每个头一个编码线程（`EncodeWorker`），两块图片缓冲（`PICTURE_BUFFERS`），帧 N+1 的转换和帧 N 的编码重叠，帧按顺序发出；`FrameAcknowledge` 控制节奏，最多 `MAX_FRAMES_IN_FLIGHT`（3）帧在途；编码器按配置选 openh264 或 VA-API（不可用时回退）；`egfx-mixed` 时静止区域改发 ClearCodec 无损图块；没有图块在途时才发图块，保证 ClearCodec 序号连续 |
+| `display` | `RdpServerDisplay`：编码选择（`vds_core::codec::select`，等待 EGFX 的宽限期 `egfx_grace_ms`）、legacy 路径（RemoteFX/bitmap，宽度按 4 对齐；遇到 GPU 缓冲时这个会话 `demand_cpu`，宿主改交 CPU 像素）、光标更新（形状发 RGBA 指针，无形状或隐藏时发透明指针）、DisplayControl 布局请求；`resize-on-connect` 只在没有其他已激活会话（或 `share=exclusive`）时发送 |
+| `egfx` | EGFX AVC420：每会话一个视频线程处理所有显示头；每个头一个编码线程（`EncodeWorker`），两块图片缓冲（`PICTURE_BUFFERS`），帧 N+1 的转换和帧 N 的编码重叠，帧按顺序发出；`FrameAcknowledge` 控制节奏，最多 `MAX_FRAMES_IN_FLIGHT`（3）帧在途；编码器按配置选 openh264 或 VA-API（不可用时回退）；head 显示 GPU 缓冲时，VA-API 的图片缓冲直接带上 `GpuFrame` 交给 `encode_gpu`（不转换、不切 ClearCodec 图块），编码线程编完就放掉它，让宿主继续；openh264 遇到 GPU 缓冲或 VA-API 返回 `Unsupported` 时，这个会话对该 head 调用 `Core::demand_cpu`，会话结束才释放；脏区、背压、`invalidate` 都按本会话（消费者 id = sid）；`egfx-mixed` 时静止区域改发 ClearCodec 无损图块；没有图块在途时才发图块，保证 ClearCodec 序号连续 |
 | `blocks` | 把刷新分成"视频区"和"静止区"（64×64 块，最近 8 次刷新中变化 ≥3 次算视频）|
 | `clearcodec` | ClearCodec 残差层编码（MS-RDPEGFX 2.2.4.1）|
-| `input` | 客户端输入 → `ClientEvent`：扫描码（E0 前缀）、绝对/相对鼠标、滚轮（fast-path 每格 120，ainput 的值先除以 `0x10000`）、Ctrl+Alt+End→Ctrl+Alt+Del（`sas-hotkey`）、`input.csv` 记录 |
+| `input` | 客户端输入 → `ClientEvent`：扫描码（E0 前缀）、绝对/相对鼠标、滚轮（fast-path 每格 120，ainput 的值先除以 `0x10000`）、Ctrl+Alt+End→Ctrl+Alt+Del（`sas-hotkey`）、`input.csv` 记录；`HeldInput` 记录这个客户端按下未松开的键和鼠标键，会话结束时（`session::run` 收尾）补发松开，避免多人共享时卡键 |
 | `sound` | rdpsnd：48 kHz/16 位/立体声；宿主的 PCM 打包成 10 ms 的 wave，环形缓冲预先分配；新流先攒 60 ms 预缓冲，100 ms 没有数据就重新预缓冲；同一批就绪的 wave 合并成一个事件发出（IronRDP 每批只保留 4 个 wave，逐个发会被丢掉，表现为杂音）；积压超过 200 ms 丢弃 |
-| `clipboard` / `clipboard_image` | cliprdr：文本（`CF_UNICODETEXT`）和图片。向客户端提供注册格式 "PNG"、"image/png" 和 `CF_DIB`；从客户端优先取 PNG 格式，否则把 `CF_DIB` 转成 PNG。图片转换在短命线程上做，不阻塞宿主主线程或会话任务 |
+| `clipboard` / `clipboard_image` | cliprdr：文本（`CF_UNICODETEXT`）和图片。向客户端提供注册格式 "PNG"、"image/png" 和 `CF_DIB`；从客户端优先取 PNG 格式，否则把 `CF_DIB` 转成 PNG。图片转换在短命线程上做，不阻塞宿主主线程或会话任务；客户端的格式列表经 `Core::client_clipboard(sid, ..)` 交给宿主，最后复制的客户端是剪贴板所有者 |
 | `client_info` | 连接时客户端信息与已打开的通道，写进 `client.json` |
 | `tls` | `TlsIdentity`：证书链、私钥、CredSSP 用的公钥、证书 SHA-256 指纹（`AA:BB:…`）；未配置证书时用 rcgen 生成自签证书 |
 | `error` | 错误类型 |

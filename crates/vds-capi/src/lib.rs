@@ -4,7 +4,9 @@
 //! Thread annotations used in the documentation:
 //! - `[any-thread]`: callable from any thread, never blocks on the network or the encoder;
 //! - `[main-thread]`: host main thread only (QEMU: with the BQL held);
-//! - `[callback]`: invoked by libvds only inside `vds_server_dispatch()`.
+//! - `[callback]`: invoked by libvds only inside `vds_server_dispatch()`;
+//! - `[any-thread callback]`: invoked by libvds from any thread (`wakeup`, `VdsReleaseFn`,
+//!   `VdsConsumedFn`).
 
 mod api;
 mod types;
@@ -25,5 +27,7 @@ pub const VDS_E_INVALID_ARG: i32 = -1;
 pub const VDS_E_FAILED: i32 = -2;
 /// The operation is not allowed in the current state (e.g. a client is connected).
 pub const VDS_E_STATE: i32 = -3;
+/// The host or the build cannot take this kind of input (e.g. a GPU buffer without VA-API).
+pub const VDS_E_UNSUPPORTED: i32 = -4;
 /// Internal error (a bug in libvds; the event is logged).
 pub const VDS_E_INTERNAL: i32 = -100;

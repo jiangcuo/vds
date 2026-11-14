@@ -27,7 +27,7 @@ use crate::client_info::{
 use crate::clipboard::{self, ClipboardFactory, ClipboardState};
 use crate::display::DisplayHandler;
 use crate::egfx::{GfxFactory, VideoWorker};
-use crate::input::InputHandler;
+use crate::input::{HeldInput, InputHandler};
 use crate::sound::{self, AudioState, SoundFactory};
 
 /// How long a disconnect request waits for the graceful shutdown before the socket is dropped.
@@ -71,6 +71,8 @@ pub(crate) struct SessionShared {
     video: Mutex<Option<VideoWorker>>,
     pub(crate) clipboard: Mutex<ClipboardState>,
     pub(crate) audio: Mutex<AudioState>,
+    /// Keys and buttons the client holds down, released when the session ends.
+    pub(crate) held_input: Mutex<HeldInput>,
     /// Diagnostic files, `None` unless `-rdp debug-dir` is set.
     pub(crate) debug: Option<Arc<SessionDebug>>,
     /// What the client told us during connection setup (`client.json`).
@@ -107,6 +109,7 @@ impl SessionShared {
             video: Mutex::new(None),
             clipboard: Mutex::new(ClipboardState::default()),
             audio: Mutex::new(AudioState::default()),
+            held_input: Mutex::new(HeldInput::default()),
             debug: vds_core::debug::session(sid),
             client: ClientRecord::default(),
             frames_in_flight: AtomicU32::new(0),
@@ -354,6 +357,14 @@ async fn run_inner(shared: Arc<SessionShared>, stream: TcpStream, access: Access
 
     shared.stopping.store(true, Ordering::Release);
     shared.stop_video();
+    // Other clients may stay on the VM: nothing this client held down may stay pressed.
+    let held = shared.held_input.lock().release();
+    if !held.is_empty() {
+        debug!(events = held.len(), "releasing the keys and buttons the client held");
+    }
+    for ev in held {
+        core.push_event(ev);
+    }
     core.unregister_session(shared.sid);
 
     // A client that just drops the TCP connection is a normal disconnection.

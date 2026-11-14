@@ -194,6 +194,17 @@ pub enum ClientEvent {
     ClipboardData(ClipboardType, Vec<u8>),
     /// Client state change (for QMP events).
     Client(ClientInfo, ClientState),
+    /// What a head's pixels must be handed over as: CPU pixels (`cpu`) because a consumer cannot
+    /// read GPU buffers, or GPU buffers again once no consumer needs CPU pixels
+    /// ([`crate::Core::demand_cpu`]).
+    HeadInput {
+        /// Head index.
+        head: u32,
+        /// CPU pixels are needed.
+        cpu: bool,
+        /// Why, for the host's logs.
+        reason: String,
+    },
 }
 
 /// Events from the host towards the active session.

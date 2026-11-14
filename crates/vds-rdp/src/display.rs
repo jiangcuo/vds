@@ -15,7 +15,9 @@ use ironrdp_server::{
 };
 use tokio::time::Instant;
 use tracing::{debug, info};
+use vds_core::CpuDemand;
 use vds_core::codec::{self, Decision, EgfxStatus, Transport};
+use vds_core::config::SharePolicy;
 use vds_core::cursor::CursorState;
 use vds_core::debug::PointerRow;
 use vds_core::display::{BYTES_PER_PIXEL, FrameRef};
@@ -70,7 +72,11 @@ impl RdpServerDisplay for DisplayHandler {
 
     async fn request_initial_size(&mut self, client_size: DesktopSize) -> DesktopSize {
         self.shared.client.set_desktop(client_size.width, client_size.height);
-        if self.shared.core.config().resize_on_connect {
+        let config = self.shared.core.config();
+        // With other clients on the VM, a joining client must not resize everybody's desktop:
+        // it takes the guest's resolution (`share=exclusive` replaces them, so it may).
+        let alone = config.share == SharePolicy::Exclusive || self.shared.core.active_sessions() == 0;
+        if config.resize_on_connect && alone {
             debug!(w = client_size.width, h = client_size.height, "requesting client size");
             self.shared.core.push_event(ClientEvent::Layout(vec![MonitorLayout {
                 left: 0,
@@ -133,6 +139,8 @@ struct DisplayUpdates {
     cursor_generation: Option<u64>,
     queue: VecDeque<DisplayUpdate>,
     next_frame_at: Instant,
+    /// RemoteFX and bitmaps need CPU pixels: held once the head showed a GPU buffer.
+    cpu_demand: Option<CpuDemand>,
 }
 
 impl DisplayUpdates {
@@ -145,7 +153,7 @@ impl DisplayUpdates {
             Some(Transport::Egfx) => Mode::Egfx,
         };
         if mode == Mode::Legacy {
-            shared.core.display().invalidate_all();
+            shared.core.display().invalidate(shared.sid);
         }
         Self {
             shared,
@@ -154,6 +162,7 @@ impl DisplayUpdates {
             cursor_generation: None,
             queue: VecDeque::new(),
             next_frame_at: Instant::now(),
+            cpu_demand: None,
         }
     }
 
@@ -186,8 +195,8 @@ impl DisplayUpdates {
             *self.shared.client_desktop.lock() = None;
         }
         let display = self.shared.core.display();
-        display.set_busy(false);
-        display.invalidate_all();
+        display.set_busy(self.shared.sid, false);
+        display.invalidate(self.shared.sid);
     }
 
     /// A fully transparent pointer.
@@ -341,7 +350,7 @@ impl DisplayUpdates {
                 return true;
             }
         }
-        if head.has_damage() {
+        if head.has_damage(self.shared.sid) {
             let now = Instant::now();
             if now < self.next_frame_at {
                 let at = self.next_frame_at;
@@ -349,7 +358,14 @@ impl DisplayUpdates {
                 return false;
             }
             self.next_frame_at = now + self.frame_interval();
-            let updates: Vec<_> = head.take_frame(|frame, damage, _| {
+            let mut gpu = false;
+            let updates: Vec<_> = head.take_frame(self.shared.sid, |frame, damage, _| {
+                if frame.gpu.is_some() {
+                    // No CPU pixels to send: the host is asked for them below and damages
+                    // the head again when it switches.
+                    gpu = true;
+                    return Vec::new();
+                }
                 damage
                     .rects()
                     .iter()
@@ -357,6 +373,13 @@ impl DisplayUpdates {
                     .filter_map(|r| Self::bitmap(&frame, r))
                     .collect()
             });
+            if gpu && self.cpu_demand.is_none() {
+                self.cpu_demand = Some(
+                    self.shared
+                        .core
+                        .demand_cpu(head.index(), "the legacy transport sends CPU pixels"),
+                );
+            }
             let queued = !updates.is_empty();
             debug!(bitmaps = updates.len(), "legacy frame queued");
             self.queue.extend(updates);

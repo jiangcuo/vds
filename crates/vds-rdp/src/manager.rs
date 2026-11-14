@@ -13,13 +13,12 @@ use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use vds_core::Core;
 use vds_core::auth::{AccessDecision, AuthMode};
+use vds_core::config::SharePolicy;
 
 use crate::error::{Error, Result};
 use crate::session::{self, Access, ManagerEvent, SessionShared};
 use crate::tls::TlsIdentity;
 
-/// Connections (authenticated or not) handled at the same time.
-const MAX_SESSIONS: usize = 8;
 /// How long shutdown waits for sessions to close.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
@@ -116,8 +115,10 @@ impl Manager {
     }
 
     fn start_session(&mut self, stream: TcpStream, peer: Option<SocketAddr>, skip_auth: bool) {
-        if self.sessions.len() >= MAX_SESSIONS {
-            info!(peer = ?peer, reason = "too many connections", "connection refused");
+        // `connections=`: connections still connecting count too.
+        let limit = usize::try_from(self.core.config().max_connections).unwrap_or(usize::MAX);
+        if self.sessions.len() >= limit {
+            info!(peer = ?peer, reason = "too many connections", limit, "connection refused");
             return;
         }
         if let Err(e) = stream.set_nodelay(true) {
@@ -159,7 +160,11 @@ impl Manager {
     fn on_session_event(&mut self, ev: ManagerEvent) {
         match ev {
             ManagerEvent::Activated(sid) => {
-                // One active client at a time: a newly authenticated client replaces the others.
+                // `share=force-shared` (default): clients share the VM. `share=exclusive`: a
+                // newly authenticated client replaces the others.
+                if self.core.config().share != SharePolicy::Exclusive {
+                    return;
+                }
                 for (other, s) in &self.sessions {
                     if *other != sid && s.is_activated() {
                         s.request_disconnect("replaced by a new connection");

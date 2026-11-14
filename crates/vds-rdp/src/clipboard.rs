@@ -251,12 +251,8 @@ impl CliprdrBackend for Backend {
         if png.is_some() || dib {
             types.push(ClipboardType::Png);
         }
-        let ev = if types.is_empty() {
-            ClientEvent::ClipboardRelease
-        } else {
-            ClientEvent::ClipboardGrab(types)
-        };
-        self.shared.core.push_event(ev);
+        // The guest's clipboard follows the client that copied last.
+        self.shared.core.client_clipboard(self.shared.sid, types);
     }
 
     fn on_format_data_request(&mut self, request: FormatDataRequest) {

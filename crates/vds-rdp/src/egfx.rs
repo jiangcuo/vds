@@ -12,6 +12,7 @@
 //! pixels. Everything the H.264 frame covers is an approximation until a tile replaces it,
 //! which is what the block map's `lossy` flag tracks.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -36,7 +37,8 @@ use vds_core::config::ServerConfig;
 use vds_core::debug::FrameRow;
 use vds_core::geom::{Rect, Region};
 use vds_core::config::VideoEncoderKind;
-use vds_core::display::FrameRef;
+use vds_core::CpuDemand;
+use vds_core::display::{FrameRef, GpuFrame};
 use vds_encode::{
     BgrxFrame, EncodedFrame, EncoderConfig, I420Frame, OpenH264Encoder, RateControl, VaapiConfig, VaapiEncoder,
 };
@@ -372,6 +374,9 @@ struct VideoLoop {
     /// How long an area must be quiet before its lossless re-send, in mixed mode.
     settle: Duration,
     rate: RateState,
+    /// Heads whose GPU buffers this session cannot encode: the host is asked for CPU pixels
+    /// until the session ends.
+    cpu_demands: BTreeMap<u32, CpuDemand>,
 }
 
 /// What a frame is for.
@@ -401,8 +406,14 @@ const PICTURE_BUFFERS: usize = 2;
 enum Picture {
     /// openh264: converted to I420 on the CPU.
     I420(I420Frame),
-    /// VA-API: BGRX as the host has it; the GPU converts it.
-    Bgrx(BgrxFrame),
+    /// VA-API: BGRX as the host has it, or the host's GPU buffer; the GPU converts either.
+    Bgrx {
+        /// CPU pixels, used while `gpu` is `None`.
+        frame: BgrxFrame,
+        /// The host's GPU buffer to encode instead of `frame`; dropped once the encoder has
+        /// read it, which lets the host go on.
+        gpu: Option<GpuFrame>,
+    },
 }
 
 impl Picture {
@@ -410,16 +421,47 @@ impl Picture {
     fn new(encoder: &Encoder, width: u32, height: u32) -> vds_encode::Result<Self> {
         Ok(match encoder {
             Encoder::OpenH264(_) => Self::I420(I420Frame::new(width, height)?),
-            Encoder::Vaapi(_) => Self::Bgrx(BgrxFrame::new(width, height)?),
+            Encoder::Vaapi(_) => Self::Bgrx {
+                frame: BgrxFrame::new(width, height)?,
+                gpu: None,
+            },
         })
     }
 
-    /// Brings `rect` up to date from `frame`: a colour conversion for openh264, a copy for VA-API.
+    /// Brings `rect` up to date from `frame`'s CPU pixels: a colour conversion for openh264, a
+    /// copy for VA-API.
     fn update(&mut self, frame: &FrameRef<'_>, rect: Rect) -> vds_encode::Result<()> {
         match self {
             Self::I420(p) => p.convert(frame, rect),
-            Self::Bgrx(p) => p.copy_rect(frame, rect),
+            Self::Bgrx { frame: p, gpu } => {
+                *gpu = None;
+                p.copy_rect(frame, rect)
+            }
         }
+    }
+
+    /// Makes the picture the host's GPU buffer. `false` when this encoder only takes CPU
+    /// pixels.
+    fn use_gpu(&mut self, frame: GpuFrame) -> bool {
+        match self {
+            Self::I420(_) => false,
+            Self::Bgrx { gpu, .. } => {
+                *gpu = Some(frame);
+                true
+            }
+        }
+    }
+
+    /// Lets the GPU buffer go once the encoder has read it.
+    fn release_gpu(&mut self) {
+        if let Self::Bgrx { gpu, .. } = self {
+            *gpu = None;
+        }
+    }
+
+    /// Whether the picture is a GPU buffer.
+    fn is_gpu(&self) -> bool {
+        matches!(self, Self::Bgrx { gpu: Some(_), .. })
     }
 }
 
@@ -441,7 +483,8 @@ impl Encoder {
         match (self, picture) {
             (Self::OpenH264(e), Picture::I420(p)) => e.encode(p, idr, qp, pts_ms),
             // The hardware takes no per-frame quantizer: a refinement frame is an ordinary one.
-            (Self::Vaapi(e), Picture::Bgrx(p)) => e.encode(p, idr, pts_ms),
+            (Self::Vaapi(e), Picture::Bgrx { gpu: Some(g), .. }) => e.encode_gpu(g, idr, pts_ms),
+            (Self::Vaapi(e), Picture::Bgrx { frame, gpu: None }) => e.encode(frame, idr, pts_ms),
             _ => Err(vds_encode::Error::Encode),
         }
     }
@@ -470,6 +513,8 @@ struct EncodeDone {
     picture: Picture,
     result: vds_encode::Result<Option<EncodedFrame>>,
     encode_us: u64,
+    /// The picture was the host's GPU buffer.
+    gpu: bool,
 }
 
 /// A head's H.264 encoder on its own thread.
@@ -494,19 +539,23 @@ impl EncodeWorker {
                 while let Ok(job) = job_rx.recv() {
                     match job {
                         EncodeJob::Encode {
-                            picture,
+                            mut picture,
                             idr,
                             qp,
                             pts_ms,
                         } => {
                             let started = Instant::now();
                             let result = encoder.encode(&picture, idr, qp, pts_ms);
+                            // The GPU buffer has been read (or never will be): the host may go on.
+                            let gpu = picture.is_gpu();
+                            picture.release_gpu();
                             let encode_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
                             if done_tx
                                 .send(EncodeDone {
                                     picture,
                                     result,
                                     encode_us,
+                                    gpu,
                                 })
                                 .is_err()
                             {
@@ -593,6 +642,17 @@ impl Queued {
     }
 }
 
+/// Asks the host for CPU pixels of `head` for the rest of the session (once per head).
+fn demand_cpu(demands: &mut BTreeMap<u32, CpuDemand>, core: &vds_core::Core, head: u32, reason: &str) {
+    if let std::collections::btree_map::Entry::Vacant(e) = demands.entry(head) {
+        warn!(
+            head,
+            reason, "cannot encode the host's GPU buffer, asking for CPU pixels"
+        );
+        e.insert(core.demand_cpu(head, reason));
+    }
+}
+
 /// The wire form of a rectangle: `right` and `bottom` are exclusive, like the EGFX PDUs'.
 fn exclusive(r: Rect) -> Option<ExclusiveRectangle> {
     Some(ExclusiveRectangle {
@@ -625,6 +685,7 @@ impl VideoLoop {
             mixed,
             settle,
             rate,
+            cpu_demands: BTreeMap::new(),
         }
     }
 
@@ -667,6 +728,8 @@ impl VideoLoop {
     fn run(mut self) {
         let core = self.shared.core.clone();
         let display = core.display();
+        // This session's damage and backpressure (consumer id = session id).
+        let sid = self.shared.sid;
         debug!("video thread started");
         while !self.stop.load(Ordering::Acquire) {
             let Some((ready, busy)) = self.with_gfx(|g| (g.is_ready() && g.supports_avc420(), g.should_backpressure()))
@@ -674,7 +737,7 @@ impl VideoLoop {
                 break;
             };
             if !ready {
-                display.set_busy(true);
+                display.set_busy(sid, true);
                 display.signal().wait_timeout(Duration::from_millis(100));
                 continue;
             }
@@ -691,7 +754,7 @@ impl VideoLoop {
                 }
             }
 
-            display.set_busy(busy);
+            display.set_busy(sid, busy);
             if busy {
                 self.rate.note_backpressure();
                 // A picture the encoder finished is already paid for: send it rather than
@@ -714,7 +777,7 @@ impl VideoLoop {
                 display.signal().wait_timeout(timeout);
             }
         }
-        display.set_busy(false);
+        display.set_busy(sid, false);
         debug!("video thread stopped");
     }
 
@@ -793,7 +856,7 @@ impl VideoLoop {
         }
         info!(heads = heads.len(), w = dw, h = dh, "EGFX surfaces configured");
         self.heads = heads;
-        display.invalidate_all();
+        display.invalidate(self.shared.sid);
         Ok(())
     }
 
@@ -843,7 +906,7 @@ impl VideoLoop {
                 continue;
             };
             let he = &self.heads[i];
-            let damaged = he.need_idr || head.has_damage();
+            let damaged = he.need_idr || head.has_damage(self.shared.sid);
             // A mixed frame also carries tiles when nothing is damaged at all: that is the
             // frame that makes an area the client has as H.264 output exact again.
             let owed = self.mixed && he.blocks.still_due(now);
@@ -909,7 +972,8 @@ impl VideoLoop {
             Err(job) => {
                 vds_core::warn_ratelimited!(head = he.index, "encoder thread gone, requesting idr");
                 he.need_idr = true;
-                if let EncodeJob::Encode { picture, .. } = *job {
+                if let EncodeJob::Encode { mut picture, .. } = *job {
+                    picture.release_gpu();
                     // The buffer was converted for a frame that never went out: everything
                     // in it is stale for the encoder's next picture.
                     he.free
@@ -937,6 +1001,7 @@ impl VideoLoop {
         let (mixed, budget) = (self.mixed, self.tile_budget());
         let ts = self.shared.timestamp_ms();
         let refine_qp = self.refine_qp;
+        let sid = self.shared.sid;
         let he = &mut self.heads[i];
         // Damage and tiles are limited to the display size: the encode padding is cropped away
         // by the SPS, so the client has no surface area for it.
@@ -949,6 +1014,8 @@ impl VideoLoop {
 
         let mut convert_us = 0_u64;
         let mut tile_us = 0_u64;
+        // The head shows a GPU buffer this encoder cannot read.
+        let mut needs_cpu = false;
         // How long the picture has been stale when the frame is started. A refinement
         // frame carries no fresh damage, so it has no age.
         let mut age_us = 0_u64;
@@ -957,9 +1024,15 @@ impl VideoLoop {
             // The buffer only needs what went into the other one meanwhile.
             let converting = Instant::now();
             let ok = head.with_frame(|frame| {
-                frame.width == he.src_w
-                    && frame.height == he.src_h
-                    && missing.rects().iter().all(|r| picture.update(&frame, *r).is_ok())
+                if frame.width != he.src_w || frame.height != he.src_h {
+                    return false;
+                }
+                if let Some(gpu) = frame.gpu {
+                    // The encoder reads the host's GPU buffer whole.
+                    needs_cpu = !picture.use_gpu(gpu);
+                    return !needs_cpu;
+                }
+                missing.rects().iter().all(|r| picture.update(&frame, *r).is_ok())
             });
             convert_us = u64::try_from(converting.elapsed().as_micros()).unwrap_or(u64::MAX);
             ok.then(|| Taken {
@@ -969,7 +1042,7 @@ impl VideoLoop {
         } else {
             let now_taken = Instant::now();
             let (src_w, src_h, need_idr) = (he.src_w, he.src_h, he.need_idr);
-            head.take_frame(|frame, damage, age| {
+            head.take_frame(sid, |frame, damage, age| {
                 if frame.width != src_w || frame.height != src_h {
                     // A resize is pending; the layout change reconfigures everything.
                     return None;
@@ -983,6 +1056,17 @@ impl VideoLoop {
                 } else {
                     damage
                 };
+                if let Some(gpu) = frame.gpu {
+                    // The host's GPU buffer: the encoder reads it whole and there are no CPU
+                    // pixels to cut lossless tiles from.
+                    if !picture.use_gpu(gpu) {
+                        needs_cpu = true;
+                        return None;
+                    }
+                    let mut avc = damage;
+                    avc.clip(&bounds);
+                    return Some(Taken { avc, tiles: Vec::new() });
+                }
 
                 let mut tiles = Vec::new();
                 if mixed && tiles_allowed {
@@ -1048,11 +1132,22 @@ impl VideoLoop {
             // The damage was consumed and the buffer may be half converted: resend everything
             // once possible.
             he.need_idr = true;
+            picture.release_gpu();
             he.free.push((picture, Region::from_rect(bounds)));
+            if needs_cpu {
+                let index = he.index;
+                demand_cpu(
+                    &mut self.cpu_demands,
+                    &self.shared.core,
+                    index,
+                    "the H.264 encoder takes CPU pixels only",
+                );
+            }
             return None;
         };
         let picture = if taken.avc.is_empty() {
             // Not converted into: the buffer keeps what it missed.
+            picture.release_gpu();
             he.free.push((picture, missing));
             if taken.tiles.is_empty() {
                 return None;
@@ -1099,6 +1194,13 @@ impl VideoLoop {
         let Some(flight) = he.in_flight.take() else {
             return false;
         };
+        if done.gpu
+            && let Err(vds_encode::Error::Unsupported(reason)) = &done.result
+        {
+            let (index, reason) = (he.index, reason.clone());
+            demand_cpu(&mut self.cpu_demands, &self.shared.core, index, &reason);
+        }
+        let he = &mut self.heads[i];
         he.free.push((done.picture, flight.missing));
         self.send_frame(i, flight.prepared, Some((done.result, done.encode_us)))
     }

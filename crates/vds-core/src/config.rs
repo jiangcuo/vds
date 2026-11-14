@@ -27,6 +27,36 @@ impl VideoEncoderKind {
     }
 }
 
+/// Whether clients share the VM or one replaces the others (`share=` on `-rdp`, as for VNC).
+///
+/// RDP has no shared flag of its own, so the client cannot ask; the host decides.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SharePolicy {
+    /// Every client sees the display and drives the guest at the same time (default).
+    #[default]
+    ForceShared,
+    /// A client that finishes connecting disconnects the others.
+    Exclusive,
+}
+
+impl SharePolicy {
+    /// Parses `force-shared` or `exclusive`.
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "force-shared" => Ok(Self::ForceShared),
+            "exclusive" => Ok(Self::Exclusive),
+            other => Err(Error::InvalidArgument(format!(
+                "unknown share policy `{other}` (force-shared or exclusive)"
+            ))),
+        }
+    }
+}
+
+/// Default limit of simultaneous connections (`connections=` on `-rdp`, as for VNC).
+pub const DEFAULT_MAX_CONNECTIONS: u32 = 32;
+/// Highest accepted `connections=`.
+pub const MAX_CONNECTIONS: u32 = 64;
+
 /// What a client's "send Ctrl+Alt+Del" short-cut turns into.
 ///
 /// RDP clients do not send Ctrl+Alt+Del itself — the client's own operating system would eat
@@ -90,6 +120,10 @@ pub struct ServerConfig {
     pub resize_on_connect: bool,
     /// How the client's Ctrl+Alt+End reaches the guest.
     pub sas_hotkey: SasHotkey,
+    /// Whether clients share the VM or replace each other.
+    pub share: SharePolicy,
+    /// Connections at the same time, those still connecting included; more are refused.
+    pub max_connections: u32,
     /// VM name or UUID, used in logs.
     pub vm_name: Option<String>,
     /// Directory receiving per-session diagnostic files; `None` disables debugging.
@@ -119,6 +153,8 @@ impl Default for ServerConfig {
             clipboard: true,
             resize_on_connect: true,
             sas_hotkey: SasHotkey::default(),
+            share: SharePolicy::default(),
+            max_connections: DEFAULT_MAX_CONNECTIONS,
             vm_name: None,
             debug_dir: None,
             debug_flags: DebugFlags::default(),
@@ -160,6 +196,12 @@ impl ServerConfig {
             return Err(Error::InvalidConfig(format!(
                 "refine-qp {} above qp-max {}: a refinement frame would be worse than the frame it replaces",
                 self.refine_qp, self.qp_max
+            )));
+        }
+        if !(1..=MAX_CONNECTIONS).contains(&self.max_connections) {
+            return Err(Error::InvalidConfig(format!(
+                "connections {} out of range 1..={MAX_CONNECTIONS}",
+                self.max_connections
             )));
         }
         if self.encoder_threads > 64 {

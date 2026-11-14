@@ -46,6 +46,17 @@
   脏区修复）。库不再需要这块缓冲时（换了新缓冲、head 改尺寸或删除、`vds_head_submit()` 切回拷贝），在**任意线程**
   调用一次 `release(opaque)`；在那之前宿主必须保证缓冲区可读。调用失败时不会调用 `release`，缓冲区仍归宿主。
   QEMU 前端只对可共享内存的 surface（virtio-gpu 资源，`share_handle` 有效）使用此方式，其余仍走拷贝。
+- GPU 缓冲区：`vds_head_attach_dmabuf()` 把宿主的 dmabuf（`VdsDmabuf`：fd、尺寸、stride、DRM fourcc、
+  modifier、`y0_top`）交给库，库 `dup()` 一份 fd，宿主保留自己的。只有 Linux、`vaapi` feature、
+  `encoder=vaapi` 且 VA-API 设备能导入这块缓冲区时才接受，否则返回 `VDS_E_UNSUPPORTED` 并在 `*err`
+  写明原因，宿主继续交 CPU 像素。之后宿主只用 `vds_head_damage()` 报脏区；库读完这一帧（或不会再读）
+  后在**任意线程**调用一次 `consumed(opaque)`。帧已经被编码线程取走时，`consumed` 可能在 detach/remove
+  之后才到，所以 `opaque` 必须一直有效（QEMU 传 head 编号）。`vds_head_detach()`、`vds_head_submit()`、
+  `vds_head_attach_shared()`、resize、remove 都会放掉它。需要 CPU 像素的客户端或编码器经回调
+  `head_input(index, cpu, reason)` 要求宿主改交 CPU 像素，`cpu = false` 时可以再交 dmabuf。非 Linux 上
+  `vds_head_attach_dmabuf()` 总是返回 `VDS_E_UNSUPPORTED`，宿主不需要条件编译。
+- `VdsConfig.share` / `VdsConfig.max_connections`：`VDS_SHARE_FORCE_SHARED`（0，默认，多个客户端共享）或
+  `VDS_SHARE_EXCLUSIVE`（新客户端断开其他客户端）；同时存在的连接数上限，0 表示默认 32，范围 1–64。
 - `VdsConfig.encoder` / `VdsConfig.render_node`（ABI 1.6 起）：`"openh264"`（默认）或 `"vaapi"`，以及 VA-API 用的 DRM 渲染节点；库复制字符串。
 - socket：用 `intptr_t` 传递（Linux 为 fd，Windows 为 `SOCKET`）。`vds_server_add_client()` 返回 `VDS_OK`
   时所有权已转移给库；返回错误时调用方仍拥有该 socket。Windows 上 QEMU 先用 `_get_osfhandle()` 取得
@@ -57,6 +68,7 @@
 - 需要错误描述的函数带 `char **err` 参数：失败时写入新分配的字符串（调用方用 `vds_free_string` 释放），可为 NULL。
 - 返回指针的函数：失败返回 NULL，并通过 `err` 说明原因。
 - 参数非法（NULL 句柄等）返回 `VDS_E_INVALID_ARG`，不崩溃。
+- 构建、平台或配置不支持这种输入（例如没有 VA-API 时交 dmabuf）返回 `VDS_E_UNSUPPORTED`；这不是错误，宿主改用别的方式。
 
 ## 6. 线程模型（每个函数都必须在文档注释中标明）
 
@@ -65,10 +77,10 @@
 | `[any-thread]` | 任意线程可调用，非阻塞 |
 | `[main-thread]` | 只能在宿主主线程调用（QEMU：持有 BQL） |
 | `[callback]` | 库的回调，只会在 `vds_server_dispatch()` 内被调用，即宿主主线程 |
-| `[any-thread callback]` | 可能在库的任意线程被调用（`wakeup` 和 `vds_head_attach_shared()` 的 `release`） |
+| `[any-thread callback]` | 可能在库的任意线程被调用（`wakeup`、`vds_head_attach_shared()` 的 `release`、`vds_head_attach_dmabuf()` 的 `consumed`） |
 
 规则：
-- 库不会在 `vds_server_dispatch()` 之外调用除 `wakeup` 以外的任何回调。
+- 库不会在 `vds_server_dispatch()` 之外调用除 `wakeup`、`release`、`consumed` 以外的任何回调。
 - 回调中允许调用 `[any-thread]` 函数；**不允许**在回调中调用 `vds_server_dispatch()` 或 `vds_server_free()`。
 - `vds_server_free()` 是 `[main-thread]`，会等待库内线程退出，之后不会再有任何回调。
 - 所有 `[any-thread]` 函数都不得阻塞超过一次 memcpy 的时间（不等网络、不等编码）。

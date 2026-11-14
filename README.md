@@ -19,6 +19,9 @@ License: MIT OR Apache-2.0.
 - Audio playback over rdpsnd, from `-audiodev rdp` or captured from any other audiodev.
 - Clipboard: text and PNG images (RDP side: registered "PNG"/"image/png" and `CF_DIB`).
 - Resolution follows the client (DisplayControl, `resize-on-connect`).
+- Several clients at once (`-rdp share=force-shared`, the default, as for VNC): every client
+  sees the display and drives the guest; `share=exclusive` makes a new client replace the
+  others, `connections=` (default 32) limits simultaneous connections.
 - Web clients: IronRDP web through `tools/vds-rdcleanpath` (RDCleanPath bridge).
 
 ## Architecture
@@ -39,7 +42,8 @@ License: MIT OR Apache-2.0.
                                          └──────────────────────────────────────────────┘
 ```
 
-**Boundary.** QEMU only includes `vds.h`. It hands libvds CPU pixels (BGRX), cursor shapes,
+**Boundary.** QEMU only includes `vds.h`. It hands libvds CPU pixels (BGRX) or, for GL consoles
+with `-rdp gl=on` and the VA-API encoder, GPU buffers (dmabufs), plus cursor shapes,
 PCM and clipboard data, and receives client input, layout requests and clipboard events
 through callbacks. Callbacks run only inside `vds_server_dispatch()`, which QEMU calls from a
 bottom half on its main thread; libvds asks for that with the `[any-thread]` `wakeup`
@@ -67,11 +71,16 @@ callback. Everything else in libvds runs on its own threads.
   accepts connections and runs one IronRDP server per session.
 - Per session, a video thread converts damaged macroblocks and drives EGFX; per head, an
   encoder thread runs openh264/VA-API with two picture buffers, so conversion of frame N+1
-  overlaps encoding of frame N. Frame acknowledgements pace the pipeline.
+  overlaps encoding of frame N. Frame acknowledgements pace the pipeline. Every session is a
+  consumer of its own: damage and backpressure are kept per session, so clients take frames
+  at their own pace and a joining client's full frame is its own. N clients mean N encodes.
 - Short-lived threads convert clipboard images (PNG ⇄ DIB).
 
 **Frame path.** Guest scanout → QEMU surface → shared in place (`vds_head_attach_shared`) or
-copied into the head's shadow buffer → damage accumulates in `vds-core` → the session's video
+copied into the head's shadow buffer (a GL scanout with `-rdp gl=on`: a dmabuf,
+`vds_head_attach_dmabuf`, imported by the VA-API encoder and converted on the GPU; read back
+into CPU pixels when libvds asks for them through `head_input`, e.g. for openh264 or a
+legacy client) → damage accumulates in `vds-core` → the session's video
 thread takes it → EGFX: BGRX→I420 of damaged macroblocks, H.264, and ClearCodec tiles for
 areas that stopped changing (`egfx-mixed`); legacy: RemoteFX/bitmap updates by IronRDP →
 client. Without an EGFX client the legacy path is used; codec order is fixed: AVC420,
@@ -146,7 +155,16 @@ One-time credentials from management software (QMP):
 {"execute": "query-rdp"}
 ```
 
-GL guests (virgl, vfio display): add `-display egl-headless`.
+GL guests (virgl, vfio display), either:
+
+- `-rdp ...,gl=on,encoder=vaapi`: RDP owns the EGL context (`rendernode=` picks the GPU; VA-API
+  uses the same one). Scanouts go to the encoder as dmabufs, no read back on the main thread.
+  When libvds cannot take them (openh264, a legacy client, a GPU whose VA-API cannot import
+  them) they are read back like egl-headless does, and `query-rdp` shows `input` and `reason`
+  per display. `gl=on` with another GL display, without OpenGL in the build or with a render
+  node that cannot be opened only warns and runs as `gl=off`; a `virtio-gpu-gl` device then
+  refuses to start, as it does without any GL display. Do not add `-display egl-headless`.
+- or `-display egl-headless` (any encoder): GL frames are read back into the 2D surface.
 
 - **Audio**: any audiodev works. `-audiodev rdp` is forwarded directly; with another driver
   (`none`, `pa`, `spice`...) the mixed output is captured. With several audiodevs pick one with
@@ -188,3 +206,10 @@ like `qm vncproxy`, pveproxy terminating the WebSocket).
   only the E0 flag, so it arrives as NumLock. Needs a patch to IronRDP.
 - **Web client**: IronRDP web negotiates no EGFX, so it gets the legacy bitmap path (more
   bandwidth than H.264).
+- **Several clients** (default `share=force-shared`; until 2026-11 a new client replaced the
+  previous one, now `share=exclusive`): every client is encoded separately (N clients, N
+  times the encoding cost); all of them inject input, and a client that leaves releases the
+  keys and buttons it held. The guest's clipboard comes from the client that copied last.
+  `resize-on-connect` only applies when no other client is connected; a DisplayControl
+  resize from any client applies, and the others follow the guest's new resolution. A legacy
+  client makes GL displays read back (`gl=on`) for everybody while it is connected.

@@ -71,6 +71,11 @@ pub const VDS_SAS_CTRL_ALT_END: u32 = 0;
 /// `VdsConfig::sas_hotkey`: the keys are injected unchanged.
 pub const VDS_SAS_OFF: u32 = 1;
 
+/// `VdsConfig::share`: every client sees the display and drives the guest (default).
+pub const VDS_SHARE_FORCE_SHARED: u32 = 0;
+/// `VdsConfig::share`: a client that finishes connecting disconnects the others.
+pub const VDS_SHARE_EXCLUSIVE: u32 = 1;
+
 /// Server configuration. Initialize with `vds_config_init()`, then change fields.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -123,6 +128,11 @@ pub struct VdsConfig {
     /// DRM render node of the VA-API encoder (e.g. "/dev/dri/renderD128"); NULL lets FFmpeg
     /// pick one. Copied by `vds_server_new()`. Since ABI 1.6.
     pub render_node: *const c_char,
+    /// `VDS_SHARE_*`: whether clients share the VM or replace each other.
+    pub share: u32,
+    /// Connections at the same time (1..=64), those still connecting included; more are
+    /// refused. 0 = default (32).
+    pub max_connections: u32,
 }
 
 /// Logging configuration for `vds_log_init()`.
@@ -139,6 +149,30 @@ pub struct VdsLogConfig {
 
 /// Gives a host buffer back to the host (`vds_head_attach_shared()`). `[any-thread callback]`
 pub type VdsReleaseFn = Option<unsafe extern "C" fn(opaque: *mut c_void)>;
+
+/// libvds has read the GPU buffer for the damage reported so far (`vds_head_attach_dmabuf()`):
+/// the host may let the guest draw into it again. `[any-thread callback]`
+pub type VdsConsumedFn = Option<unsafe extern "C" fn(opaque: *mut c_void)>;
+
+/// A GPU buffer (dmabuf) the host scans out, for `vds_head_attach_dmabuf()`. Linux only.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VdsDmabuf {
+    /// The dmabuf file descriptor; libvds duplicates it, the host keeps its own.
+    pub fd: i32,
+    /// Width in pixels: the head's width.
+    pub width: u32,
+    /// Height in pixels: the head's height.
+    pub height: u32,
+    /// Bytes per row.
+    pub stride: u32,
+    /// `DRM_FORMAT_*` fourcc (`XRGB8888`, `ARGB8888`, `XBGR8888` or `ABGR8888`).
+    pub fourcc: u32,
+    /// `DRM_FORMAT_MOD_*`; `DRM_FORMAT_MOD_INVALID` for the driver's implicit layout.
+    pub modifier: u64,
+    /// The rows are stored bottom-up (QEMU's `y0_top`): libvds flips the picture.
+    pub y0_top: bool,
+}
 
 /// A rectangle in pixels.
 #[repr(C)]
@@ -236,4 +270,9 @@ pub struct VdsCallbacks {
     pub client_state: Option<
         unsafe extern "C" fn(opaque: *mut c_void, info: *const VdsClientInfo, state: u32, reason: *const c_char),
     >,
+    /// How head `index` must be handed over: `cpu` = CPU pixels (`vds_head_submit()` or
+    /// `vds_head_attach_shared()`), because a client or the encoder cannot read GPU buffers;
+    /// `!cpu` = GPU buffers (`vds_head_attach_dmabuf()`) may be attached again. `reason` is for
+    /// logs.
+    pub head_input: Option<unsafe extern "C" fn(opaque: *mut c_void, index: u32, cpu: bool, reason: *const c_char)>,
 }

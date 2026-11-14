@@ -12,7 +12,7 @@ use tracing::{error, warn};
 use vds_core::Core;
 use vds_core::auth::{AuthMode, ConnectedAction, Credentials};
 use vds_core::codec::CodecSet;
-use vds_core::config::{SasHotkey, ServerConfig, VideoEncoderKind};
+use vds_core::config::{SasHotkey, ServerConfig, SharePolicy, VideoEncoderKind};
 use vds_core::cursor::CursorImage;
 use vds_core::display::Head;
 use vds_core::event::{ClientEvent, ClientInfo, ClientState, ClipboardType, MouseButton};
@@ -22,7 +22,10 @@ use vds_core::secret::Secret;
 use vds_rdp::{RdpServer, TlsIdentity};
 
 use crate::types::*;
-use crate::{VDS_ABI_MAJOR, VDS_ABI_MINOR, VDS_E_FAILED, VDS_E_INTERNAL, VDS_E_INVALID_ARG, VDS_E_STATE, VDS_OK};
+use crate::{
+    VDS_ABI_MAJOR, VDS_ABI_MINOR, VDS_E_FAILED, VDS_E_INTERNAL, VDS_E_INVALID_ARG, VDS_E_STATE, VDS_E_UNSUPPORTED,
+    VDS_OK,
+};
 
 macro_rules! ffi_guard {
     ($default:expr, $body:block) => {
@@ -53,12 +56,25 @@ pub struct VdsServer {
     opaque: Arc<Opaque>,
     tls: Mutex<Option<TlsIdentity>>,
     rdp: Mutex<Option<RdpServer>>,
+    gpu_probe: Arc<Mutex<GpuProbe>>,
 }
 
 /// A display head (opaque).
 pub struct VdsHead {
     core: Core,
     head: Arc<Head>,
+    gpu_probe: Arc<Mutex<GpuProbe>>,
+}
+
+/// Whether GPU buffers can be encoded, checked on the VA-API device when one is attached.
+#[derive(Debug, Default)]
+enum GpuProbe {
+    /// Not opened yet: the first `vds_head_attach_dmabuf()` opens it.
+    #[default]
+    Unopened,
+    Open(vds_encode::VaapiProbe),
+    /// The device cannot be opened; every GPU buffer is refused for this reason.
+    Failed(String),
 }
 
 /// Writes `msg` to `*err` if `err` is not NULL.
@@ -286,6 +302,13 @@ impl VdsServer {
                         unsafe { f(op, ty.to_raw(), data.as_ptr(), data.len()) }
                     }
                 }
+                ClientEvent::HeadInput { head, cpu, reason } => {
+                    let reason = CString::new(reason.replace('\0', " ")).unwrap_or_default();
+                    if let Some(f) = cb.head_input {
+                        // SAFETY: host-provided callback and context; arguments live for the call.
+                        unsafe { f(op, head, cpu, reason.as_ptr()) }
+                    }
+                }
                 ClientEvent::Client(info, state) => {
                     let raw = client_info(&info);
                     let st = match state {
@@ -343,6 +366,8 @@ pub unsafe extern "C" fn vds_config_init(cfg: *mut VdsConfig) {
             egfx_mixed: d.egfx_mixed,
             encoder: core::ptr::null(),
             render_node: core::ptr::null(),
+            share: VDS_SHARE_FORCE_SHARED,
+            max_connections: 0,
         };
         // SAFETY: `cfg` is NULL or writable per the function contract.
         if let Some(out) = unsafe { cfg.as_mut() } {
@@ -426,7 +451,17 @@ pub unsafe extern "C" fn vds_server_new(
                 VDS_SAS_OFF => SasHotkey::Off,
                 other => return Err(format!("unknown sas-hotkey {other}")),
             };
+            let share = match c.share {
+                VDS_SHARE_FORCE_SHARED => SharePolicy::ForceShared,
+                VDS_SHARE_EXCLUSIVE => SharePolicy::Exclusive,
+                other => return Err(format!("unknown share policy {other}")),
+            };
             let d = ServerConfig::default();
+            let max_connections = if c.max_connections == 0 {
+                d.max_connections
+            } else {
+                c.max_connections
+            };
             // 0 selects the default, as `encoder_threads` does; anything else must be a
             // quantizer H.264 can represent.
             let qp_max = if c.qp_max == 0 {
@@ -474,6 +509,8 @@ pub unsafe extern "C" fn vds_server_new(
                 clipboard: c.clipboard,
                 resize_on_connect: c.resize_on_connect,
                 sas_hotkey,
+                share,
+                max_connections,
                 vm_name,
                 debug_dir,
                 debug_flags: vds_core::debug::DebugFlags::from_bits(c.debug_flags),
@@ -495,6 +532,7 @@ pub unsafe extern "C" fn vds_server_new(
                 opaque,
                 tls: Mutex::new(None),
                 rdp: Mutex::new(None),
+                gpu_probe: Arc::new(Mutex::new(GpuProbe::Unopened)),
             })
         })();
         match result {
@@ -919,6 +957,7 @@ pub unsafe extern "C" fn vds_head_add(
             Ok(h) => Box::into_raw(Box::new(VdsHead {
                 core: s.core.clone(),
                 head: h,
+                gpu_probe: Arc::clone(&s.gpu_probe),
             })),
             Err(e) => {
                 // SAFETY: `err` per the function contract.
@@ -1075,8 +1114,159 @@ pub unsafe extern "C" fn vds_head_attach_shared(
     })
 }
 
+/// The host's consumed callback (`vds_head_attach_dmabuf()`).
+#[derive(Debug)]
+struct HostConsumed {
+    consumed: VdsConsumedFn,
+    opaque: *mut c_void,
+}
+
+// SAFETY: `consumed` is documented as callable from any thread with `opaque`; libvds never
+// dereferences `opaque`.
+unsafe impl Send for HostConsumed {}
+// SAFETY: see above.
+unsafe impl Sync for HostConsumed {}
+
+impl vds_core::display::ConsumedNotify for HostConsumed {
+    fn consumed(&self) {
+        if let Some(f) = self.consumed {
+            // SAFETY: the host's callback, any thread, with its own context pointer.
+            unsafe { f(self.opaque) };
+        }
+    }
+}
+
+/// Takes a duplicate of the host's dmabuf descriptor.
+#[cfg(unix)]
+fn dup_buffer_fd(fd: i32) -> Result<vds_core::platform::BufferFd, String> {
+    use std::os::fd::BorrowedFd;
+
+    if fd < 0 {
+        return Err(format!("invalid file descriptor {fd}"));
+    }
+    // SAFETY: the host guarantees `fd` is an open descriptor for the duration of the call
+    // (vds_head_attach_dmabuf() contract); it is only borrowed to duplicate it.
+    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+    borrowed
+        .try_clone_to_owned()
+        .map(vds_core::platform::BufferFd::new)
+        .map_err(|e| format!("cannot duplicate the dmabuf: {e}"))
+}
+
+/// There are no dmabufs on this platform.
+#[cfg(not(unix))]
+fn dup_buffer_fd(_fd: i32) -> Result<vds_core::platform::BufferFd, String> {
+    Err(String::from("GPU buffers are not supported on this platform"))
+}
+
+impl VdsHead {
+    /// Builds the buffer and checks the VA-API device can encode it; the error says why not.
+    fn gpu_buffer(&self, b: &VdsDmabuf) -> Result<vds_core::display::GpuBuffer, String> {
+        let config = self.core.config();
+        if config.encoder != VideoEncoderKind::Vaapi {
+            return Err(String::from("GPU buffers need the vaapi encoder"));
+        }
+        let buffer = vds_core::display::GpuBuffer {
+            fd: dup_buffer_fd(b.fd)?,
+            width: b.width,
+            height: b.height,
+            stride: b.stride,
+            fourcc: b.fourcc,
+            modifier: b.modifier,
+            y0_top: b.y0_top,
+        };
+        let mut probe = self.gpu_probe.lock();
+        if matches!(*probe, GpuProbe::Unopened) {
+            *probe = match vds_encode::VaapiProbe::open(config.render_node.as_deref()) {
+                Ok(p) => GpuProbe::Open(p),
+                Err(e) => GpuProbe::Failed(e.to_string()),
+            };
+        }
+        match &mut *probe {
+            GpuProbe::Open(p) => p.check(&buffer).map_err(|e| e.to_string())?,
+            GpuProbe::Failed(e) => return Err(e.clone()),
+            GpuProbe::Unopened => return Err(String::from("the VA-API device is not open")),
+        }
+        Ok(buffer)
+    }
+}
+
+/// Makes the head show the GPU buffer `buf` (a dmabuf) instead of CPU pixels. The host then
+/// reports changes with `vds_head_damage()`. `[main-thread]`
+///
+/// Only the VA-API encoder reads GPU buffers, without copying them to the CPU; the first call
+/// opens the VA-API device (`VdsConfig.render_node`, which must be the GPU that renders the
+/// buffer) and every call checks that this buffer can be imported. When the build, the
+/// platform, the configured encoder or the device cannot use it, returns `VDS_E_UNSUPPORTED`
+/// with the reason in `*err`, and the host keeps handing over CPU pixels. The size must be the
+/// head's (`vds_head_resize()` first).
+///
+/// libvds duplicates `buf->fd`. After each `vds_head_damage()`, once libvds has read the buffer
+/// (or will not), it calls `consumed(opaque)` once, from any thread: a host that stops the
+/// guest from drawing until then gets no torn frames. A later attach, `vds_head_detach()`,
+/// `vds_head_submit()`, `vds_head_attach_shared()`, a resize or a removal lets the buffer go
+/// (calling `consumed` if the host still waits); a frame the encoder already took may still
+/// call `consumed` after that, so `opaque` must stay valid (or be a plain value such as the
+/// head index). A client or encoder that cannot read GPU buffers asks for CPU pixels through
+/// the `head_input` callback.
+///
+/// # Safety
+/// `head` must be valid; `buf` readable, with `buf->fd` open during the call; `consumed` NULL
+/// or callable from any thread; `err` NULL or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vds_head_attach_dmabuf(
+    head: *mut VdsHead,
+    buf: *const VdsDmabuf,
+    consumed: VdsConsumedFn,
+    opaque: *mut c_void,
+    err: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!(VDS_E_INTERNAL, {
+        // SAFETY: per the function contract.
+        let (Some(h), Some(b)) = (unsafe { as_head(head) }, unsafe { buf.as_ref() }) else {
+            // SAFETY: `err` per the function contract.
+            unsafe { set_err(err, "invalid head or buffer") };
+            return VDS_E_INVALID_ARG;
+        };
+        let buffer = match h.gpu_buffer(b) {
+            Ok(buffer) => buffer,
+            Err(e) => {
+                // SAFETY: `err` per the function contract.
+                unsafe { set_err(err, &e) };
+                return VDS_E_UNSUPPORTED;
+            }
+        };
+        let notify: Arc<dyn vds_core::display::ConsumedNotify> = Arc::new(HostConsumed { consumed, opaque });
+        match h.head.attach_gpu(buffer, Some(notify)) {
+            Ok(()) => VDS_OK,
+            Err(e) => {
+                // SAFETY: `err` per the function contract.
+                unsafe { set_err(err, &e) };
+                VDS_E_INVALID_ARG
+            }
+        }
+    })
+}
+
+/// Lets the head's host or GPU buffer go: the head shows black until the next submit or
+/// attach. `[any-thread]`
+///
+/// # Safety
+/// `head` must be valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vds_head_detach(head: *mut VdsHead) -> i32 {
+    ffi_guard!(VDS_E_INTERNAL, {
+        // SAFETY: per the function contract.
+        let Some(h) = (unsafe { as_head(head) }) else {
+            return VDS_E_INVALID_ARG;
+        };
+        h.head.detach();
+        VDS_OK
+    })
+}
+
 /// Reports damaged `rects` of the head without copying pixels: libvds reads them from the
-/// buffer given to `vds_head_attach_shared()`. `[any-thread]`
+/// buffer given to `vds_head_attach_shared()` or `vds_head_attach_dmabuf()`. `[any-thread]`
 ///
 /// # Safety
 /// `head` must be valid; `rects` readable for `count` entries.
@@ -1105,6 +1295,8 @@ pub unsafe extern "C" fn vds_head_remove(head: *mut VdsHead) {
         }
         // SAFETY: the pointer came from `Box::into_raw` in `vds_head_add()`.
         let h = unsafe { Box::from_raw(head) };
+        // Sessions may hold the head a little longer: the host's buffers go now.
+        h.head.detach();
         h.core.display().remove_head(h.head.index());
     })
 }

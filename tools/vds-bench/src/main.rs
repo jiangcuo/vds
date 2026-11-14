@@ -278,6 +278,7 @@ fn bench(w: u32, h: u32, p: &Params, s: &Scenario) -> Result<()> {
             height: h,
             stride: w as usize * 4,
             pixels: &px,
+            gpu: None,
         };
         pic.convert(&src, Rect::new(0, 0, w, h))?;
     }
@@ -295,6 +296,7 @@ fn bench(w: u32, h: u32, p: &Params, s: &Scenario) -> Result<()> {
                 height: h,
                 stride: w as usize * 4,
                 pixels: &px,
+                gpu: None,
             };
             pic.convert(&src, r.align_out(16, &bounds))?;
         }

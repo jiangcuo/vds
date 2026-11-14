@@ -17,11 +17,12 @@ pub mod error;
 pub mod event;
 pub mod geom;
 pub mod log;
+pub mod platform;
 pub mod secret;
 pub mod session;
 pub mod signal;
 
-pub use crate::core::Core;
+pub use crate::core::{Core, CpuDemand};
 pub use crate::error::{Error, Result};
 
 #[doc(hidden)]

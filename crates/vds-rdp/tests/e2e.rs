@@ -46,7 +46,7 @@ use tokio::net::TcpStream;
 use vds_core::Core;
 use vds_core::auth::{ConnectedAction, Credentials};
 use vds_core::codec::CodecSet;
-use vds_core::config::{SasHotkey, ServerConfig};
+use vds_core::config::{SasHotkey, ServerConfig, SharePolicy};
 use vds_core::event::{ClientEvent, ClipboardType, MouseButton};
 use vds_core::secret::Secret;
 use vds_rdp::{RdpServer, TlsIdentity};
@@ -1851,10 +1851,63 @@ fn avc420_only_server_disconnects_legacy_client() {
     });
 }
 
+/// Clients share the VM by default: a second client does not end the first, and both keep
+/// receiving the picture.
 #[test]
-fn new_client_replaces_previous_one() {
+fn shared_clients_both_receive_updates() {
     let config = ServerConfig {
         egfx_grace_ms: 200,
+        ..ServerConfig::default()
+    };
+    let f = Fixture::with_password(config, false);
+    runtime().block_on(async {
+        let (mut s1, mut f1) = connect(f.addr, USER, PASS, None).await.unwrap();
+        pump(&mut s1, &mut f1, Duration::from_secs(20), |n| n >= 1)
+            .await
+            .unwrap();
+        let (mut s2, mut f2) = connect(f.addr, USER, PASS, None).await.unwrap();
+        pump(&mut s2, &mut f2, Duration::from_secs(20), |n| n >= 1)
+            .await
+            .unwrap();
+        pump(&mut s1, &mut f1, Duration::from_secs(10), |n| n >= 3)
+            .await
+            .expect("the first client keeps receiving updates");
+        pump(&mut s2, &mut f2, Duration::from_secs(10), |n| n >= 3)
+            .await
+            .expect("the second client keeps receiving updates");
+    });
+}
+
+/// `connections=` refuses a connection beyond the limit and leaves the others alone.
+#[test]
+fn connections_beyond_the_limit_are_refused() {
+    let config = ServerConfig {
+        egfx_grace_ms: 200,
+        max_connections: 1,
+        ..ServerConfig::default()
+    };
+    let f = Fixture::with_password(config, false);
+    runtime().block_on(async {
+        let (mut s1, mut f1) = connect(f.addr, USER, PASS, None).await.unwrap();
+        pump(&mut s1, &mut f1, Duration::from_secs(20), |n| n >= 1)
+            .await
+            .unwrap();
+        assert!(
+            connect(f.addr, USER, PASS, None).await.is_err(),
+            "the second connection is refused"
+        );
+        pump(&mut s1, &mut f1, Duration::from_secs(10), |n| n >= 3)
+            .await
+            .expect("the first client is not affected");
+    });
+}
+
+/// `share=exclusive`: a client that finishes connecting replaces the previous one.
+#[test]
+fn exclusive_client_replaces_previous_one() {
+    let config = ServerConfig {
+        egfx_grace_ms: 200,
+        share: SharePolicy::Exclusive,
         ..ServerConfig::default()
     };
     let f = Fixture::with_password(config, false);

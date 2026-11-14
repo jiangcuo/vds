@@ -231,6 +231,8 @@ fn handle_event(core: &Core, stats: &Mutex<EventStats>, ev: ClientEvent) {
         | ClientEvent::PointerRel { .. }
         | ClientEvent::Button { .. }
         | ClientEvent::Wheel { .. } => s.pointer += 1,
+        // The test host hands over CPU pixels only.
+        ClientEvent::HeadInput { .. } => {}
         ClientEvent::Layout(monitors) => {
             s.layouts += 1;
             for (i, m) in monitors.iter().enumerate() {

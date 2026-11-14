@@ -13,6 +13,9 @@ pub enum Error {
     /// Colour conversion failed.
     #[error("colour conversion failed: {0}")]
     Convert(String),
+    /// The encoder cannot use this input (a host GPU buffer it cannot import or flip).
+    #[error("the encoder cannot use this input: {0}")]
+    Unsupported(String),
     /// The encoder failed to encode a picture.
     #[error("the encoder failed to encode a picture")]
     Encode,

@@ -11,8 +11,8 @@ libvds 唯一的对外接口：C ABI。编译出 `libvds.so`（Windows 上 `vds.
 | 模块 | 内容 |
 |---|---|
 | `lib` | ABI 版本常量（`VDS_ABI_MAJOR`/`MINOR`）、`ffi_guard!`、线程标注说明（`[any-thread]`、`[main-thread]`、`[callback]`） |
-| `types` | 纯 C 类型：`VdsConfig`、`VdsCallbacks`、`VdsRect`、`VdsMonitor`、`VdsClientInfo`、各类常量（`VDS_CODEC_*`、`VDS_CLIPBOARD_TEXT/PNG`、`VDS_AUTH_*` 等）、`VdsReleaseFn` |
-| `api` | 所有 `extern "C"` 函数：服务器生命周期（`vds_server_new`/`listen`/`add_client`/`dispatch`/`disconnect_all`/`free`）、密码与过期、TLS（`vds_server_set_tls`；`vds_server_tls_fingerprint` 返回证书指纹，未配置证书时当场生成自签证书并保留，供之后启动的服务器使用）、客户端列表、`vds_server_wants_frame`、显示头（`vds_head_add`/`resize`/`submit`/`attach_shared`/`damage`/`remove`）、光标、音频、剪贴板、日志、调试目录；`VdsConfig` 解析成 `ServerConfig`（编码器名 `openh264`/`vaapi`、渲染节点等） |
+| `types` | 纯 C 类型：`VdsConfig`、`VdsCallbacks`、`VdsRect`、`VdsMonitor`、`VdsClientInfo`、`VdsDmabuf`、各类常量（`VDS_CODEC_*`、`VDS_CLIPBOARD_TEXT/PNG`、`VDS_AUTH_*` 等）、`VdsReleaseFn`、`VdsConsumedFn` |
+| `api` | 所有 `extern "C"` 函数：服务器生命周期（`vds_server_new`/`listen`/`add_client`/`dispatch`/`disconnect_all`/`free`）、密码与过期、TLS（`vds_server_set_tls`；`vds_server_tls_fingerprint` 返回证书指纹，未配置证书时当场生成自签证书并保留，供之后启动的服务器使用）、客户端列表、`vds_server_wants_frame`、显示头（`vds_head_add`/`resize`/`submit`/`attach_shared`/`attach_dmabuf`/`detach`/`damage`/`remove`；`attach_dmabuf` 在 `encoder=vaapi` 时用服务器共用的 `VaapiProbe`（第一次调用时打开）检查缓冲，不行就返回 `VDS_E_UNSUPPORTED`；`remove` 先 `detach`）、`head_input` 回调、光标、音频、剪贴板、日志、调试目录；`VdsConfig` 解析成 `ServerConfig`（编码器名 `openh264`/`vaapi`、渲染节点、`share`（`VDS_SHARE_*`）、`max_connections`（0 = 32）等） |
 
 ## 打包
 
@@ -30,7 +30,8 @@ libvds 唯一的对外接口：C ABI。编译出 `libvds.so`（Windows 上 `vds.
 
 - 每个 `extern "C"` 函数体都包在 `ffi_guard!` 里，panic 不得穿越 ABI。
 - `unsafe` 只在本 crate 和 `vds-encode::vaapi` 允许，每处写 `// SAFETY:`。
-- 回调只在 `vds_server_dispatch()` 里触发（`wakeup` 除外，它可以在任何线程调用）。
+- 回调只在 `vds_server_dispatch()` 里触发（`wakeup`、`release`、`consumed` 除外，它们可以在任何线程调用）。
+- dmabuf fd 的复制（`BorrowedFd::try_clone_to_owned`）在本 crate 的 `#[cfg(unix)]` 里做；其它平台 `vds_head_attach_dmabuf` 返回 `VDS_E_UNSUPPORTED`。
 - **开发期间不改 ABI 版本号**；新增函数或字段在提交说明里写清楚。
 - 改了类型或函数就重新生成 `include/vds.h`（`cargo run -p xtask -- gen-abi`）并同步 QEMU 前端的调用方。
 - `vaapi` feature 只透传给 `vds-rdp`/`vds-encode`。

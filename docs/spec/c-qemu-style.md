@@ -30,14 +30,18 @@
 | `include/ui/qemu-rdp.h` | 给 `vl.c`、`ui-qmp-cmds.c` 用的钩子；**不包含 `vds.h`** |
 | `ui/rdp.h` | 前端内部声明（包含 `vds.h`） |
 | `ui/rdp-core.c` | 选项解析、server 生命周期、wakeup/BH/dispatch、QMP/HMP、事件、tls-creds/secret |
-| `ui/rdp-display.c` | 2D DisplayChangeListener、共享 surface（`vds_head_attach_shared`）、光标、布局（GL 经 egl-headless） |
+| `ui/rdp-display.c` | 2D DisplayChangeListener、共享 surface（`vds_head_attach_shared`）、光标、布局；GL 控制台交给 `rdp-gl.c` |
+| `ui/rdp-gl.c` | 模块 `ui-rdp-gl`（依赖 `ui-opengl`）：`-rdp gl=on` 的 EGL 上下文和 GL 监听，dmabuf 交给 libvds，拒收时回读；经 `RdpGlOps` 注册到 `rdp-core.c` |
 | `ui/rdp-input.c` | 键盘、鼠标、锁定键同步 |
 | `ui/rdp-clipboard.c` | QemuClipboardPeer：文本和 PNG（`QEMU_CLIPBOARD_TYPE_PNG`） |
 | `audio/rdpaudio.c` | audiodev 驱动 `rdp` |
 | `ui/rdp-audio.c` | 其它 audiodev 用 `AUD_add_capture` 抓混音输出（`-rdp audiodev=`） |
 | `chardev/char-rdp.c` | （未实现）`rdpusb`、`rdpport` |
 
-前端直接编入 QEMU，QAPI 用 `'if': 'CONFIG_RDP'`，不需要模块桩。
+前端直接编入 QEMU，QAPI 用 `'if': 'CONFIG_RDP'`，不需要模块桩。唯一例外是 `rdp-gl.c`：EGL 辅助函数在
+`--enable-modules` 时属于 `ui-opengl` 模块，编入主程序的代码不能直接调用，所以它是模块 `ui-rdp-gl`，
+由 `qemu_rdp_early_init()` 加载（`module_load`），用 `rdp_gl_register()` 把 `RdpGlOps` 交给 `rdp-core.c`；
+不开模块时它直接编入，注册在启动时完成。加载或初始化失败时 `-rdp` 退回 2D。
 
 - **新功能写在新文件里。** 对已有文件（`system/vl.c`、`qapi/ui.json`、`ui/ui-qmp-cmds.c`、`meson.build` 等）的改动只做"挂钩"：
   加一个 case、一个调用、一个 QAPI 分支，逻辑放到 `ui/rdp-*.c`。
@@ -76,10 +80,23 @@
 - QEMU 侧只包含 `<vds.h>`，不假设库内部实现。
 - 传给 libvds 的像素格式统一为 BGRX（`PIXMAN_x8r8g8b8`，小端）。其它格式在前端用 pixman 转换，或在
   `dpy_gfx_check_format` 中拒绝，让 QEMU 提供兼容的 surface。
-- 前端只实现 2D 监听；GL 控制台由 `-display egl-headless` 回读到 2D surface，前端不调用 GL。
+- 不开 `gl=on` 时前端只实现 2D 监听，GL 控制台由 `-display egl-headless` 回读到 2D surface，前端不调用 GL。
+- `-rdp gl=on` 时前端自己持有 EGL 上下文（`ui/rdp-gl.c`，`system/vl.c` 里在 spice 之后调用
+  `qemu_rdp_early_init()`，因为 `virtio-gpu-gl` 创建时就要求 GL 已经就绪）。GL scanout 导出 dmabuf 交给
+  `vds_head_attach_dmabuf`；libvds 拒收（`VDS_E_UNSUPPORTED`）或经 `head_input` 要求 CPU 像素时回读
+  （`egl_fb_read`，等同 egl-headless），回读也失败时停在最后一帧，下次 scanout 重试。同一个 head 连续
+  3 次拒收后固定回读。其它显示已经持有 GL（egl-headless、spice/dbus `gl=on`）、本构建或宿主机不支持、
+  EGL 初始化失败时都只警告，按 `gl=off` 运行；VM 里有 `virtio-gpu-gl` 时设备自己会因为没有 GL 而无法创建。
+- dmabuf 模式下 `dpy_gl_update` 只做 `glFlush()` 和 `vds_head_damage()`，**不挡 guest**（不用
+  `graphic_hw_gl_block`，`consumed` 传 NULL）：挡到 libvds 编完一帧会拖住 guest 的渲染和输入，拖动时
+  明显卡顿、跳帧（2026-11-12 A/B 实测）。代价是偶尔一帧撕裂，和共享 2D surface 一样由下一帧修复。
+- 回读模式下客户端忙（`vds_server_wants_frame()` 为 false）时不读，记下来，下一次更新读整帧。
+- rdp-gl 自己的 GL 对象（FBO）都在渲染节点上下文 `qemu_egl_rn_ctx` 里创建和使用，每次先 make current。
 - 使用 `vds_head_wants_frame()` 判断是否提交；返回 false 时继续累积脏区，不得丢弃脏区。
 - 刷新频率按已初始化的活动客户端决定：连接期间保持 `max-fps` 节拍，无客户端才使用空闲间隔。
-  编码器/FrameAck 的短暂背压只跳过提交，不得把刷新间隔降到空闲值；替换客户端时按 sid 区分旧连接的断开事件。
+  编码器/FrameAck 的短暂背压只跳过提交，不得把刷新间隔降到空闲值。`share=force-shared`（默认）时可以同时有多个
+  客户端：前端按 sid 记录已初始化的客户端（集合，不是计数），断开事件按 sid 移除；`share=exclusive` 时新客户端
+  会断开旧的，同样按 sid 区分。`connections=` 交给 libvds（`VdsConfig.max_connections`）。
 
 ## 6. 构建与验证
 

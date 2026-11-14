@@ -13,7 +13,7 @@ pub mod yuv;
 pub use crate::bgrx::BgrxFrame;
 pub use crate::error::{Error, Result};
 pub use crate::openh264::OpenH264Encoder;
-pub use crate::vaapi::{VaapiConfig, VaapiEncoder};
+pub use crate::vaapi::{VaapiConfig, VaapiEncoder, VaapiProbe};
 pub use crate::yuv::I420Frame;
 
 /// Rate-control parameters: a bitrate cap and a quantizer ceiling.
@@ -132,6 +132,7 @@ mod tests {
             height: 64,
             stride: 256,
             pixels: &px,
+            gpu: None,
         };
         let mut pic = I420Frame::new(64, 64).unwrap();
         pic.convert(&src, Rect::new(0, 0, 64, 64)).unwrap();
