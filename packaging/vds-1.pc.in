@@ -1,0 +1,9 @@
+prefix=@prefix@
+libdir=@libdir@
+includedir=@includedir@
+
+Name: vds
+Description: libvds remote display server (RDP)
+Version: @version@
+Libs: -L${libdir} -lvds
+Cflags: -I${includedir}

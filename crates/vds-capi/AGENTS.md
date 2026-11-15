@@ -22,6 +22,11 @@ libvds 唯一的对外接口：C ABI。编译出 `libvds.so`（Windows 上 `vds.
   - `cargo deb -p vds-capi --variant dev --no-build` → `libvds-dev`：`vds.h`、`/usr/lib/pkgconfig/vds-1.pc`（`debian/vds-1.pc`）、`libvds.so → libvds.so.0`。
 - `libvds0` 的依赖是手写的（`libc6, libgcc-s1, libstdc++6, zlib1g`，对应 `readelf -d` 的 NEEDED）：cargo-deb 的 `$auto` 不分析 `.so`。新增链接库时同步更新。
 - `debian/vds-1.pc` 的 `Version` 跟随 workspace 版本，改版本号时一起改。
+- 生产软件源用的包不走 cargo-deb，用仓库根目录的 `Makefile`（`make deb` / `make rpm`），打包文件在 `packaging/`：
+  `packaging/debian/`（`libvds0` 装到 multiarch 目录 `libvds.so.<版本>` + `libvds.so.0`，`dh_makeshlibs -V` 生成 shlibs，
+  依赖由 `${shlibs:Depends}` 算出，另有 dbgsym）、`packaging/rpm/libvds.spec`（`%{_libdir}`，`libvds-devel`，debuginfo）、
+  共用的 `packaging/vds-1.pc.in`。两者都只打包已提交的代码，用 vendor 的依赖离线编译。
+  `debian/rules` 和 spec 都检查 SONAME 是 `libvds.so.0`，改 `build.rs` 的 SONAME 时同步改它们的 `SOVERSION`/`soversion`。
 - 包里不开 `vaapi` feature（FFmpeg 是 GPL，且要额外的运行时依赖）。
 - 发行版构建在对应的构建镜像里做（PVE8：`pxvirt-builder-bookworm`），不要拿宿主机编的 `.so` 打包：glibc 版本不同。
 - 不改 ABI 版本号；和 QEMU 的配套靠包依赖：`pve-qemu-kvm` 经 `debian/shlibs.local` 自动依赖 `libvds0 (>= 0.1.0)`。

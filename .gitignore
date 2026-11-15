@@ -2,3 +2,4 @@
 /prefix/
 /prefix-linux/
 *.swp
+/build/

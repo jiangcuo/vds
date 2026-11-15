@@ -113,6 +113,19 @@ distribution's builder image:
 cargo deb -p vds-capi
 cargo deb -p vds-capi --variant dev --no-build
 ```
+
+Production packages for the package repositories are built from `packaging/` with the top-level
+`Makefile`, inside the target distribution's builder:
+
+```bash
+make deb     # build/deb/: libvds0, libvds-dev, libvds0-dbgsym (multiarch libdir, shlibs)
+make rpm     # build/rpm/RPMS, build/rpm/SRPMS: libvds, libvds-devel, debuginfo (%{_libdir})
+make clean
+```
+Both package the committed source (`git archive HEAD`) and build it offline against the crates
+vendored from `Cargo.lock` (vendoring is the only step that needs the network); rustc/cargo come
+from PATH (rustup). The package version is the workspace `version`: bump
+`packaging/debian/changelog` and `packaging/rpm/libvds.spec` together with it.
 The Proxmox VE QEMU package with `-rdp` is built from `jiangcuo/pve-qemu` with the standard
 `apt update && mk-build-deps --install --remove && make deb` once `libvds-dev` is installed:
 

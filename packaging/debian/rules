@@ -1,0 +1,60 @@
+#!/usr/bin/make -f
+# Production build of libvds, run by `make deb` in the top-level Makefile. The
+# crates come from vendor/ (offline build); rustc/cargo come from PATH (rustup).
+
+include /usr/share/dpkg/architecture.mk
+include /usr/share/dpkg/pkg-info.mk
+
+# The C code built by the crates (openh264, aws-lc) keeps the hardening flags,
+# but each build script picks its own -O level: aws-lc must build jitterentropy
+# at -O0, and the -O2 appended from dpkg-buildflags breaks it.
+export CFLAGS := $(filter-out -O%,$(shell dpkg-buildflags --get CFLAGS))
+export CXXFLAGS := $(filter-out -O%,$(shell dpkg-buildflags --get CXXFLAGS))
+
+# Line tables are enough for backtraces from libvds0-dbgsym.
+export CARGO_PROFILE_RELEASE_DEBUG = line-tables-only
+export CARGO_TARGET_DIR ?= $(CURDIR)/target
+ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+export CARGO_BUILD_JOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+endif
+
+CARGO_FLAGS = --release --frozen -p vds-capi
+LIBDIR = usr/lib/$(DEB_HOST_MULTIARCH)
+# Must match the -soname in crates/vds-capi/build.rs.
+SOVERSION = 0
+
+%:
+	dh $@
+
+# Nothing to configure or clean; keep dh-cargo (if installed) out of the way.
+override_dh_auto_configure override_dh_auto_clean:
+
+# dh_clean deletes *.orig files, but the vendored crates' checksums cover their
+# Cargo.toml.orig.
+override_dh_clean:
+	dh_clean -Xvendor/
+
+override_dh_auto_build:
+	cargo build $(CARGO_FLAGS)
+	readelf -d $(CARGO_TARGET_DIR)/release/libvds.so | grep -q 'SONAME.*\[libvds\.so\.$(SOVERSION)\]'
+
+override_dh_auto_test:
+ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
+	cargo test $(CARGO_FLAGS)
+endif
+
+override_dh_auto_install:
+	install -D -m 644 $(CARGO_TARGET_DIR)/release/libvds.so \
+		debian/tmp/$(LIBDIR)/libvds.so.$(DEB_VERSION_UPSTREAM)
+	ln -s libvds.so.$(DEB_VERSION_UPSTREAM) debian/tmp/$(LIBDIR)/libvds.so.$(SOVERSION)
+	ln -s libvds.so.$(SOVERSION) debian/tmp/$(LIBDIR)/libvds.so
+	install -D -m 644 include/vds.h debian/tmp/usr/include/vds.h
+	install -d debian/tmp/$(LIBDIR)/pkgconfig
+	sed -e 's|@prefix@|/usr|' -e 's|@libdir@|/$(LIBDIR)|' \
+		-e 's|@includedir@|/usr/include|' -e 's|@version@|$(DEB_VERSION_UPSTREAM)|' \
+		debian/vds-1.pc.in > debian/tmp/$(LIBDIR)/pkgconfig/vds-1.pc
+
+# Functions are added without a new SONAME while the ABI is in development, so
+# programs depend on at least the version they were built against.
+override_dh_makeshlibs:
+	dh_makeshlibs -V

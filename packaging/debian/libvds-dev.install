@@ -1,0 +1,3 @@
+usr/include/vds.h
+usr/lib/*/libvds.so
+usr/lib/*/pkgconfig/vds-1.pc

@@ -1,0 +1,33 @@
+Source: libvds
+Section: libs
+Priority: optional
+Maintainer: Lierfang Support Team <itsupport@lierfang.com>
+# Rust (rustc/cargo, the version in rust-toolchain.toml) comes from rustup: the
+# distributions' rustc is too old, so it is not a Build-Depends.
+Build-Depends: debhelper-compat (= 12),
+               g++,
+               nasm,
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/jiangcuo/vds
+
+Package: libvds0
+Architecture: linux-any
+Multi-Arch: same
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: in-process RDP display server library
+ libvds is the in-process remote display server (RDP) used by QEMU's -rdp
+ option. It encodes the guest display with H.264 (openh264), RemoteFX or
+ bitmaps and carries input, clipboard and audio.
+
+Package: libvds-dev
+Section: libdevel
+Architecture: linux-any
+Multi-Arch: same
+Depends: libvds0 (= ${binary:Version}), ${misc:Depends}
+Description: in-process RDP display server library - development files
+ libvds is the in-process remote display server (RDP) used by QEMU's -rdp
+ option.
+ .
+ This package contains the header and the pkg-config file (vds-1) needed to
+ build QEMU against libvds.
