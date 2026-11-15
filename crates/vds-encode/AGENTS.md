@@ -20,7 +20,11 @@
 ## 构建
 
 - openh264 来自 `gitea.lierfang.com/pxcloud/openh264-rs`，从源码编译，需要 C++ 编译器和 nasm。
-- `build.rs` 只编译 VA-API shim；没有 `vaapi` feature 或 pkg-config 找不到 libavcodec/libavutil/libva 时跳过。
+- `build.rs`：开 `vaapi` feature（Linux）时，用子模块 `third_party/ffmpeg`（FFmpeg 8.1）在 `OUT_DIR` 里编静态
+  FFmpeg（只有 `h264_vaapi` 编码器的 libavcodec 和 libavutil，选项见 `FFMPEG_CONFIGURE`），再编 shim 并静态链接；
+  libva/libva-drm 用系统的（pkg-config）。同一 release 和选项只编一次（`OUT_DIR/ffmpeg/stamp`），日志在
+  `OUT_DIR/ffmpeg/build.log`。子模块没初始化、找不到 libva/libva-drm、FFmpeg 没开 VA-API DRM 都是构建错误。
+  只支持本机构建（不交叉编译）。不开 feature 时什么都不做。
 
 ## 约束
 

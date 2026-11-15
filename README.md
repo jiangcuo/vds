@@ -99,7 +99,13 @@ DisplayControl and `resize-on-connect` → `dpy_set_ui_info` → the guest drive
 Requirements: Rust (version pinned in `rust-toolchain.toml`), a C/C++ compiler and nasm (openh264 is built from source), pkg-config,
 `cbindgen` (`cargo install cbindgen`) for header generation.
 
+With `--features vaapi` (Linux), `vds-encode` builds a static FFmpeg 8.1 from the
+`third_party/ffmpeg` submodule (libavcodec with `h264_vaapi` and libavutil only; the first build
+takes a few minutes), so the distribution's FFmpeg plays no part; libva and libva-drm (`libva-dev`)
+come from the system.
+
 ```bash
+git submodule update --init third_party/ffmpeg
 cargo build --release -p vds-capi --features vaapi   # drop --features vaapi without VA-API
 cargo run -p xtask -- install --prefix "$HOME/vds-prefix"
 ```
@@ -124,7 +130,8 @@ make clean
 ```
 Both package the committed source (`git archive HEAD`) and build it offline against the crates
 vendored from `Cargo.lock` (vendoring is the only step that needs the network); rustc/cargo come
-from PATH (rustup). The package version is the workspace `version`: bump
+from PATH (rustup). The packages are built with `--features vaapi`; the build fails if VA-API did
+not get in. The package version is the workspace `version`: bump
 `packaging/debian/changelog` and `packaging/rpm/libvds.spec` together with it.
 The Proxmox VE QEMU package with `-rdp` is built from `jiangcuo/pve-qemu` with the standard
 `apt update && mk-build-deps --install --remove && make deb` once `libvds-dev` is installed:

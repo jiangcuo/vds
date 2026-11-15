@@ -18,7 +18,9 @@ ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 export CARGO_BUILD_JOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
 endif
 
-CARGO_FLAGS = --release --frozen -p vds-capi
+# VA-API encoding: vds-encode builds FFmpeg (third_party/ffmpeg) statically,
+# libva stays a shared library of the system.
+CARGO_FLAGS = --release --frozen -p vds-capi --features vaapi
 LIBDIR = usr/lib/$(DEB_HOST_MULTIARCH)
 # Must match the -soname in crates/vds-capi/build.rs.
 SOVERSION = 0
@@ -26,8 +28,11 @@ SOVERSION = 0
 %:
 	dh $@
 
-# Nothing to configure or clean; keep dh-cargo (if installed) out of the way.
-override_dh_auto_configure override_dh_auto_clean:
+# Nothing to configure; keep dh-cargo (if installed) out of the way.
+override_dh_auto_configure:
+
+override_dh_auto_clean:
+	rm -f debian/libvds.dynamic
 
 # dh_clean deletes *.orig files, but the vendored crates' checksums cover their
 # Cargo.toml.orig.
@@ -36,7 +41,11 @@ override_dh_clean:
 
 override_dh_auto_build:
 	cargo build $(CARGO_FLAGS)
-	readelf -d $(CARGO_TARGET_DIR)/release/libvds.so | grep -q 'SONAME.*\[libvds\.so\.$(SOVERSION)\]'
+	readelf -d $(CARGO_TARGET_DIR)/release/libvds.so > debian/libvds.dynamic
+	grep -q 'SONAME.*\[libvds\.so\.$(SOVERSION)\]' debian/libvds.dynamic
+	# VA-API built in, FFmpeg linked statically
+	grep -q 'NEEDED.*\[libva\.so\.' debian/libvds.dynamic
+	! grep -q 'NEEDED.*\[libav' debian/libvds.dynamic
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))

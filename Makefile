@@ -53,8 +53,13 @@ sources:
 	@git diff --quiet HEAD -- || echo "warning: uncommitted changes are not packaged (git archive HEAD)" >&2
 	rm -rf $(BUILDDIR)/src $(SRCTAR) $(VENDORTAR)
 	mkdir -p $(BUILDDIR)/src
-	git archive --format=tar.gz --prefix=$(NAME)-$(VERSION)/ -o $(SRCTAR) HEAD
-	tar -C $(BUILDDIR)/src -xzf $(SRCTAR)
+	git archive --format=tar --prefix=$(NAME)-$(VERSION)/ HEAD | tar -C $(BUILDDIR)/src -x
+	# git archive leaves submodules out: add FFmpeg at the commit HEAD records
+	test -e third_party/ffmpeg/configure || git submodule update --init --depth 1 third_party/ffmpeg
+	git -C third_party/ffmpeg archive --format=tar \
+		--prefix=$(NAME)-$(VERSION)/third_party/ffmpeg/ $$(git rev-parse HEAD:third_party/ffmpeg) \
+		| tar -C $(BUILDDIR)/src -x
+	tar -C $(BUILDDIR)/src -czf $(SRCTAR) $(NAME)-$(VERSION)
 	mkdir -p $(SRCDIR)/.cargo
 	cd $(SRCDIR) && cargo vendor --locked --versioned-dirs vendor > .cargo/config.toml
 	tar -C $(SRCDIR) -czf $(VENDORTAR) vendor .cargo

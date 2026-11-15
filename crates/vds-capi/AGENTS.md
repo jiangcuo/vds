@@ -27,7 +27,9 @@ libvds 唯一的对外接口：C ABI。编译出 `libvds.so`（Windows 上 `vds.
   依赖由 `${shlibs:Depends}` 算出，另有 dbgsym）、`packaging/rpm/libvds.spec`（`%{_libdir}`，`libvds-devel`，debuginfo）、
   共用的 `packaging/vds-1.pc.in`。两者都只打包已提交的代码，用 vendor 的依赖离线编译。
   `debian/rules` 和 spec 都检查 SONAME 是 `libvds.so.0`，改 `build.rs` 的 SONAME 时同步改它们的 `SOVERSION`/`soversion`。
-- 包里不开 `vaapi` feature（FFmpeg 是 GPL，且要额外的运行时依赖）。
+- 生产包（`make deb` / `make rpm`）开 `vaapi` feature：`vds-encode` 的 `build.rs` 用子模块 `third_party/ffmpeg`
+  （FFmpeg 8.1）静态编进 libavcodec（`h264_vaapi`）和 libavutil，libva/libva-drm 用系统的共享库。打包时检查
+  NEEDED 里有 `libva.so`、没有 `libav*`。cargo-deb 的包仍不开 vaapi。
 - 发行版构建在对应的构建镜像里做（PVE8：`pxvirt-builder-bookworm`），不要拿宿主机编的 `.so` 打包：glibc 版本不同。
 - 不改 ABI 版本号；和 QEMU 的配套靠包依赖：`pve-qemu-kvm` 经 `debian/shlibs.local` 自动依赖 `libvds0 (>= 0.1.0)`。
 

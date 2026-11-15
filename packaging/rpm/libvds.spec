@@ -23,6 +23,8 @@ ExclusiveOS:    linux
 BuildRequires:  gcc
 BuildRequires:  gcc-c++
 BuildRequires:  binutils
+BuildRequires:  libva-devel
+BuildRequires:  pkgconfig
 BuildRequires:  nasm
 
 %if %{with system_rust}
@@ -58,11 +60,18 @@ unset LDFLAGS
 export CARGO_PROFILE_RELEASE_DEBUG=line-tables-only
 export CARGO_PROFILE_RELEASE_STRIP=none
 export CARGO_TARGET_DIR=$PWD/target
-cargo build --release --frozen -p vds-capi %{?_smp_mflags}
-readelf -d target/release/libvds.so | grep -q 'SONAME.*\[libvds\.so\.%{soversion}\]'
+# VA-API encoding: vds-encode builds FFmpeg (third_party/ffmpeg) statically,
+# libva stays a shared library of the system.
+cargo build --release --frozen -p vds-capi --features vaapi %{?_smp_mflags}
+readelf -d target/release/libvds.so > libvds.dynamic
+grep -q 'SONAME.*\[libvds\.so\.%{soversion}\]' libvds.dynamic
+# VA-API built in, FFmpeg linked statically
+grep -q 'NEEDED.*\[libva\.so\.' libvds.dynamic
+! grep -q 'NEEDED.*\[libav' libvds.dynamic
 
 %check
-cargo test --release --frozen -p vds-capi %{?_smp_mflags}
+export CARGO_TARGET_DIR=$PWD/target
+cargo test --release --frozen -p vds-capi --features vaapi %{?_smp_mflags}
 
 %install
 install -D -m 755 target/release/libvds.so %{buildroot}%{_libdir}/libvds.so.%{version}

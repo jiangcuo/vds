@@ -37,6 +37,9 @@
 - libvds 源码许可证是 MIT OR Apache-2.0，不得从 GPL 代码复制。
 - 宿主机：Linux + Windows（MSYS2 UCRT64）。Guest：Linux + Windows。每个改动都必须两个宿主平台都能编译。
 - QEMU 补丁只针对自家 fork，不考虑上游。
+- `vaapi` feature 静态链接 FFmpeg 8.1（2026-11-15 人类批准）：源码是子模块 `third_party/ffmpeg`（固定在 release
+  tag），由 `vds-encode` 的 `build.rs` 只编 `h264_vaapi` 需要的 libavcodec/libavutil；libva 仍用系统的。
+  升级 FFmpeg 就是把子模块移到新的 release tag。
 
 任务看起来需要违反以上任何一条时：**停止，向人类说明原因并等待决定。** 不要"先做了再说"。
 
