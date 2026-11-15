@@ -1485,7 +1485,7 @@ mod tests {
     fn version() {
         // The major is part of the contract; the minor moves on compatible additions.
         let version = vds_abi_version();
-        assert_eq!(version >> 16, 1, "ABI major changed");
+        assert_eq!(version >> 16, 2, "ABI major changed");
         assert_eq!(version & 0xffff, crate::VDS_ABI_MINOR, "ABI minor mismatch");
     }
 
