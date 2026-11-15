@@ -63,6 +63,10 @@ override_dh_auto_install:
 		-e 's|@includedir@|/usr/include|' -e 's|@version@|$(DEB_VERSION_UPSTREAM)|' \
 		debian/vds-1.pc.in > debian/tmp/$(LIBDIR)/pkgconfig/vds-1.pc
 
+# The DWARF of the static FFmpeg is beyond bookworm's dwz (0.15); the debug
+# symbols are fine uncompressed.
+override_dh_dwz:
+
 # Functions are added without a new SONAME while the ABI is in development, so
 # programs depend on at least the version they were built against.
 override_dh_makeshlibs:
