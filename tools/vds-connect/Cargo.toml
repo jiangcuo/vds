@@ -6,6 +6,8 @@ rust-version = "1.77"
 license = "MIT OR Apache-2.0"
 publish = false
 description = "Opens .vds connection files: runs FreeRDP, tunnelling RDP through a WebSocket when needed"
+authors = ["Lierfang Support Team <itsupport@lierfang.com>"]
+homepage = "https://github.com/jiangcuo/vds"
 
 # Standalone tool, outside the libvds workspace: it keeps its own older toolchain
 # (rust-toolchain.toml) so the Windows build still runs on Windows 7.
@@ -19,6 +21,58 @@ ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+# macOS: Finder hands a double-clicked .vds over in an Apple Event (application:openURLs:),
+# received through an NSApplication delegate.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSArray", "NSNotification", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.2", features = ["NSApplication", "NSResponder", "NSRunningApplication"] }
+
+# Installers, built by .github/workflows/vds-connect.yml: deb, NSIS .exe and .app with
+# cargo-packager, rpm with cargo-generate-rpm. Run packaging/icons/render.sh first; the CI puts
+# FreeRDP (sdl-freerdp.exe, MacFreeRDP.app) in packaging/freerdp/ for Windows and macOS.
+[package.metadata.packager]
+product-name = "VDS Connect"
+identifier = "com.lierfang.vds-connect"
+publisher = "Lierfang"
+long-description = "Registered as the handler of .vds files, the RDP connection files of the Proxmox VE console."
+binaries = [{ path = "vds-connect", main = true }]
+icons = [
+    "packaging/icons/out/vds-connect-*.png",
+    "packaging/icons/out/vds-connect.ico",
+    "packaging/icons/out/vds-connect.icns",
+]
+file-associations = [
+    { extensions = ["vds"], mime-type = "application/x-vds", description = "VDS connection", role = "viewer" },
+]
+# Next to vds-connect.exe; matches nothing on the other systems.
+resources = ["packaging/freerdp/*.exe"]
+
+[package.metadata.packager.deb]
+depends = ["freerdp3-sdl | freerdp-sdl | freerdp2-x11"]
+desktop-template = "packaging/vds-connect.desktop"
+files = { "packaging/vds-connect.xml" = "usr/share/mime/packages/vds-connect.xml" }
+
+[package.metadata.packager.nsis]
+installer-icon = "packaging/icons/out/vds-connect.ico"
+
+[package.metadata.packager.macos]
+# Copied with its symlinks into Contents/MacOS, next to vds-connect. It needs macOS 15.
+embedded-apps = ["packaging/freerdp/MacFreeRDP.app"]
+minimum-system-version = "15.0"
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/vds-connect", dest = "/usr/bin/vds-connect", mode = "755" },
+    { source = "packaging/vds-connect.desktop", dest = "/usr/share/applications/vds-connect.desktop", mode = "644" },
+    { source = "packaging/vds-connect.xml", dest = "/usr/share/mime/packages/vds-connect.xml", mode = "644" },
+    { source = "packaging/icons/out/vds-connect-32.png", dest = "/usr/share/icons/hicolor/32x32/apps/vds-connect.png", mode = "644" },
+    { source = "packaging/icons/out/vds-connect-128.png", dest = "/usr/share/icons/hicolor/128x128/apps/vds-connect.png", mode = "644" },
+    { source = "packaging/icons/out/vds-connect-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/vds-connect.png", mode = "644" },
+    { source = "packaging/icons/out/vds-connect-512.png", dest = "/usr/share/icons/hicolor/512x512/apps/vds-connect.png", mode = "644" },
+]
+requires = { freerdp = "*" }
 
 [profile.release]
 panic = "abort"

@@ -214,6 +214,16 @@ bridge always connects to its `--connect` target, whatever host the page names. 
 `--listen` it serves stdin/stdout, the form meant for Proxmox VE (an `rdpproxy` API spawning it
 like `qm vncproxy`, pveproxy terminating the WebSocket).
 
+## vds-connect
+
+The Proxmox VE console menu's RDP entry downloads a `.vds` file; `tools/vds-connect` opens it
+and runs FreeRDP, through a local tunnel over the `wss://` URL when the file says
+`transport=websocket`. The `vds-connect` workflow builds installers that make it the handler
+of `.vds` files: deb and rpm (FreeRDP comes from the distribution), a Windows x64 setup `.exe`
+with FreeRDP's nightly `sdl-freerdp.exe`, and a universal macOS `.dmg` with MacFreeRDP
+(macOS 15 or later; the app is signed ad hoc, so the first launch needs right-click → Open).
+`FREERDP_PATH` picks another FreeRDP client. See `tools/vds-connect/AGENTS.md`.
+
 ## Client requirements and known limits
 
 - **Keyboard**: clients must send scancodes. Unicode key events

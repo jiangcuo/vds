@@ -1,4 +1,8 @@
-# Single self-contained binaries: no MinGW runtime DLLs on Windows, static musl on Linux.
+# Single self-contained binaries: no Visual C++ or MinGW runtime DLLs on Windows, static musl
+# on Linux.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [target.i686-pc-windows-gnu]
 linker = "i686-w64-mingw32-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]

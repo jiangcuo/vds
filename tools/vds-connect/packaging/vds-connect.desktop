@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=VDS Connect
+Comment=Opens VDS connection files with FreeRDP
+Exec=vds-connect %u
+Icon=vds-connect
+Terminal=false
+NoDisplay=true
+MimeType=application/x-vds;
+Categories=Network;RemoteAccess;

@@ -1,6 +1,8 @@
 //! vds-connect: opens a `.vds` connection file and runs FreeRDP on it.
 //!
-//! Usage: `vds-connect <file.vds>` (registered as the handler of `.vds` files).
+//! Usage: `vds-connect <file.vds>` (registered as the handler of `.vds` files). The file may be
+//! given as a `file://` URI, as desktop files with `%U` pass it. On macOS, started without one,
+//! it takes the files the Finder opens with it (see `macos`).
 //!
 //! The file holds `key=value` lines:
 //!
@@ -25,12 +27,15 @@
 
 mod finder;
 mod launcher;
+#[cfg(target_os = "macos")]
+mod macos;
 mod tunnel;
 
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::IsTerminal as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{bail, Context as _, Result};
@@ -60,15 +65,28 @@ fn main() {
     let console = std::io::stderr().is_terminal();
     let log = init_logging(console);
 
-    if let Err(error) = run(log, console) {
-        tracing::error!("{error:#}");
-        std::process::exit(1);
+    let path = std::env::args_os().nth(1).map(file_path);
+    #[cfg(target_os = "macos")]
+    if path.is_none() {
+        macos::run(log, console);
+    }
+
+    let result = path
+        .context("usage: vds-connect <file.vds>")
+        .and_then(|path| connect(&path, log, console));
+    match result {
+        // The tunnel threads end with the process.
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            tracing::error!("{error:#}");
+            std::process::exit(1);
+        }
     }
 }
 
-fn run(log: Option<File>, console: bool) -> Result<()> {
-    let path = std::env::args_os().nth(1).context("usage: vds-connect <file.vds>")?;
-    let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", PathBuf::from(&path).display()))?;
+/// Connects to what the `.vds` file at `path` names and returns FreeRDP's exit code.
+fn connect(path: &Path, log: Option<File>, console: bool) -> Result<i32> {
+    let text = fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let connection = parse(&text)?;
 
     let freerdp = finder::find()?;
@@ -82,10 +100,38 @@ fn run(log: Option<File>, console: bool) -> Result<()> {
         }
     };
 
-    let code = launcher::run(&freerdp, &host, port, &connection, log, console)?;
+    launcher::run(&freerdp, &host, port, &connection, log, console)
+}
 
-    // The tunnel threads end with the process.
-    std::process::exit(code);
+/// The path of a command line argument: the argument itself, or the path of a `file://` URI
+/// (percent-decoded, host part dropped).
+fn file_path(arg: OsString) -> PathBuf {
+    let Some(rest) = arg.to_str().and_then(|arg| arg.strip_prefix("file://")) else {
+        return PathBuf::from(arg);
+    };
+    let path = &rest[rest.find('/').unwrap_or(rest.len())..];
+
+    let mut bytes = Vec::with_capacity(path.len());
+    let mut rest = path.as_bytes();
+    while let Some((&byte, tail)) = rest.split_first() {
+        let hex = tail.get(..2).and_then(|hex| std::str::from_utf8(hex).ok());
+        match hex.and_then(|hex| u8::from_str_radix(hex, 16).ok()) {
+            Some(decoded) if byte == b'%' => {
+                bytes.push(decoded);
+                rest = &tail[2..];
+            }
+            _ => {
+                bytes.push(byte);
+                rest = tail;
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    let path = PathBuf::from(<OsString as std::os::unix::ffi::OsStringExt>::from_vec(bytes));
+    #[cfg(not(unix))]
+    let path = PathBuf::from(String::from_utf8_lossy(&bytes).trim_start_matches('/').to_owned());
+    path
 }
 
 fn parse(text: &str) -> Result<Connection> {
@@ -135,8 +181,8 @@ pub fn normalize_fingerprint(fingerprint: &str) -> String {
     fingerprint.chars().filter(|c| *c != ':').collect::<String>().to_ascii_lowercase()
 }
 
-/// Logs to `%LOCALAPPDATA%\vds-connect\vds-connect.log` on Windows and the temporary
-/// directory elsewhere, and to stderr as well when `console`. Returns another handle to the log
+/// Logs to `%LOCALAPPDATA%\vds-connect\vds-connect.log` on Windows,
+/// `~/Library/Logs/vds-connect/vds-connect.log` on macOS and the temporary directory elsewhere, and to stderr as well when `console`. Returns another handle to the log
 /// file for FreeRDP's output.
 fn init_logging(console: bool) -> Option<File> {
     #[cfg(windows)]
@@ -144,7 +190,12 @@ fn init_logging(console: bool) -> Option<File> {
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
         .join("vds-connect");
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let dir = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join("Library/Logs"))
+        .unwrap_or_else(std::env::temp_dir)
+        .join("vds-connect");
+    #[cfg(not(any(windows, target_os = "macos")))]
     let dir = std::env::temp_dir();
 
     let file = fs::create_dir_all(&dir).ok().and_then(|()| {

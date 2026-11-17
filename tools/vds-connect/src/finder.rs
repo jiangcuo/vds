@@ -1,7 +1,9 @@
 //! Locates the FreeRDP client.
 //!
-//! `FREERDP_PATH` (the client itself, or a directory holding it) comes first. Otherwise the
-//! directory of this executable on Windows, `/usr/local/bin` and `/usr/bin` elsewhere, then `PATH`.
+//! `FREERDP_PATH` (the client itself, or a directory holding it) comes first. Otherwise: on
+//! Windows the directory of this executable; on macOS the `MacFreeRDP.app` bundled next to this
+//! executable (`VDS Connect.app/Contents/MacOS`), `/opt/homebrew/bin` and `/usr/local/bin`;
+//! elsewhere `/usr/local/bin` and `/usr/bin`; then `PATH`.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -50,11 +52,16 @@ fn search(dir: &Path) -> Option<PathBuf> {
 
 fn default_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
+    let exe_dir = env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf));
 
     if cfg!(windows) {
-        if let Some(dir) = env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
-            dirs.push(dir);
+        dirs.extend(exe_dir);
+    } else if cfg!(target_os = "macos") {
+        if let Some(dir) = exe_dir {
+            dirs.push(dir.join("MacFreeRDP.app/Contents/MacOS"));
         }
+        dirs.push(PathBuf::from("/opt/homebrew/bin"));
+        dirs.push(PathBuf::from("/usr/local/bin"));
     } else {
         dirs.push(PathBuf::from("/usr/local/bin"));
         dirs.push(PathBuf::from("/usr/bin"));

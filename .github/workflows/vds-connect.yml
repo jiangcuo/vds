@@ -1,0 +1,223 @@
+name: vds-connect
+
+# Installers of vds-connect that open .vds files: deb and rpm (amd64, arm64), a Windows NSIS
+# .exe and a macOS .dmg, the last two with FreeRDP inside. Built when vds-connect changes on
+# main, for tags and for manual runs; only tags publish them in the GitHub release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - tools/vds-connect/**
+      - .github/workflows/vds-connect.yml
+  workflow_dispatch:
+    inputs:
+      freerdp-windows-build:
+        description: Build number of freerdp-nightly-windows to bundle (empty for the last one)
+        type: string
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PACKAGER_VERSION: 0.11.8
+  CARGO_GENERATE_RPM_VERSION: 0.21.1
+  MACFREERDP_URL: https://github.com/jiangcuo/freerdp-macos/releases/download/3.31.2-dev0/MacFreeRDP-macos-universal.dmg
+  FREERDP_WINDOWS_JOB: https://ci.freerdp.com/job/freerdp-nightly-windows
+
+defaults:
+  run:
+    shell: bash
+    working-directory: tools/vds-connect
+
+jobs:
+  icons:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render icons
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends librsvg2-bin icoutils icnsutils
+          packaging/icons/render.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vds-connect-icons
+          path: tools/vds-connect/packaging/icons/out
+
+  linux:
+    name: linux ${{ matrix.arch }}
+    needs: icons
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vds-connect-icons
+          path: tools/vds-connect/packaging/icons/out
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          command -v rustup || curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # musl-tools has musl-gcc for the runner's own architecture.
+      - name: Build
+        run: |
+          triple=$(echo '${{ matrix.target }}' | tr a-z- A-Z_)
+          export "CARGO_TARGET_${triple}_LINKER=musl-gcc" "CC_${{ matrix.target }}=musl-gcc"
+          cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable install cargo-packager --version "$CARGO_PACKAGER_VERSION" --locked
+          cargo +stable install cargo-generate-rpm --version "$CARGO_GENERATE_RPM_VERSION" --locked
+          cargo packager --release --target ${{ matrix.target }} --formats deb
+          cargo generate-rpm --target ${{ matrix.target }}
+          mkdir -p ../../dist
+          cp target/${{ matrix.target }}/release/*.deb target/${{ matrix.target }}/generate-rpm/*.rpm ../../dist/
+          ls -la ../../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vds-connect-linux-${{ matrix.arch }}
+          path: dist/*
+
+  windows:
+    needs: icons
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vds-connect-icons
+          path: tools/vds-connect/packaging/icons/out
+
+      # A nightly: the log keeps the build number and checksum of what went in.
+      - name: Download FreeRDP
+        env:
+          BUILD: ${{ inputs.freerdp-windows-build }}
+        run: |
+          if [ -z "$BUILD" ]; then
+            BUILD=$(curl -fsSL "$FREERDP_WINDOWS_JOB/lastSuccessfulBuild/buildNumber")
+          fi
+          mkdir -p packaging/freerdp
+          curl -fsSL -o packaging/freerdp/sdl-freerdp.exe \
+            "$FREERDP_WINDOWS_JOB/$BUILD/arch=win64,label=vs2017/artifact/install/bin/sdl-freerdp.exe"
+          echo "freerdp-nightly-windows build $BUILD"
+          sha256sum packaging/freerdp/sdl-freerdp.exe
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Package
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable install cargo-packager --version "$CARGO_PACKAGER_VERSION" --locked
+          cargo packager --release --target x86_64-pc-windows-msvc --formats nsis
+          mkdir -p ../../dist
+          cp target/x86_64-pc-windows-msvc/release/*-setup.exe ../../dist/
+          ls -la ../../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vds-connect-windows-x64
+          path: dist/*
+
+  macos:
+    needs: icons
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: vds-connect-icons
+          path: tools/vds-connect/packaging/icons/out
+
+      - name: Download MacFreeRDP
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/MacFreeRDP.dmg" "$MACFREERDP_URL"
+          want=$(curl -fsSL "$MACFREERDP_URL.sha256" | awk '{print $1}')
+          have=$(shasum -a 256 "$RUNNER_TEMP/MacFreeRDP.dmg" | awk '{print $1}')
+          echo "MacFreeRDP.dmg sha256 $have"
+          [ "$want" = "$have" ]
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/macfreerdp" "$RUNNER_TEMP/MacFreeRDP.dmg"
+          app=$(find "$RUNNER_TEMP/macfreerdp" -maxdepth 2 -name MacFreeRDP.app | head -n 1)
+          mkdir -p packaging/freerdp
+          ditto "$app" packaging/freerdp/MacFreeRDP.app
+          hdiutil detach "$RUNNER_TEMP/macfreerdp"
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/vds-connect \
+            target/aarch64-apple-darwin/release/vds-connect target/x86_64-apple-darwin/release/vds-connect
+
+      # No Developer ID: the app is signed ad hoc (once it holds MacFreeRDP) and the .dmg made
+      # here, so it holds the signed app.
+      - name: Package
+        run: |
+          rustup toolchain install stable --profile minimal
+          cargo +stable install cargo-packager --version "$CARGO_PACKAGER_VERSION" --locked
+          cargo packager --release --target universal-apple-darwin --formats app
+          out=target/universal-apple-darwin/release
+          codesign --force --deep -s - "$out/VDS Connect.app"
+          codesign --verify --deep --strict "$out/VDS Connect.app"
+          mkdir "$RUNNER_TEMP/dmg"
+          ditto "$out/VDS Connect.app" "$RUNNER_TEMP/dmg/VDS Connect.app"
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
+          mkdir -p ../../dist
+          hdiutil create -volname "VDS Connect" -srcfolder "$RUNNER_TEMP/dmg" -fs HFS+ -format UDZO \
+            "../../dist/VDS-Connect_${version}_universal.dmg"
+          ls -la ../../dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vds-connect-macos-universal
+          path: dist/*
+
+  release:
+    needs: [linux, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vds-connect-*-*
+          merge-multiple: true
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

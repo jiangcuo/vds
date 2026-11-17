@@ -1,4 +1,10 @@
 # Rust 1.77 is the last release whose standard library supports Windows 7.
 [toolchain]
 channel = "1.77.2"
-targets = ["i686-pc-windows-gnu", "x86_64-unknown-linux-musl"]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
