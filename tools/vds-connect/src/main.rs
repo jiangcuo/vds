@@ -17,6 +17,9 @@
 //!
 //! Environment: `FREERDP_PATH` picks the FreeRDP client, `FREERDP_ARGS` adds arguments that
 //! override the defaults.
+//!
+//! The log goes to a file (see `init_logging`); run from a terminal, it also goes there, together
+//! with FreeRDP's own output.
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -26,10 +29,12 @@ mod tunnel;
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
+use std::io::IsTerminal as _;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use anyhow::{bail, Context as _, Result};
+use tracing_subscriber::fmt::writer::MakeWriterExt as _;
 
 /// A parsed `.vds` file.
 pub struct Connection {
@@ -52,15 +57,16 @@ pub enum Transport {
 }
 
 fn main() {
-    let log = init_logging();
+    let console = std::io::stderr().is_terminal();
+    let log = init_logging(console);
 
-    if let Err(error) = run(log) {
+    if let Err(error) = run(log, console) {
         tracing::error!("{error:#}");
         std::process::exit(1);
     }
 }
 
-fn run(log: Option<File>) -> Result<()> {
+fn run(log: Option<File>, console: bool) -> Result<()> {
     let path = std::env::args_os().nth(1).context("usage: vds-connect <file.vds>")?;
     let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", PathBuf::from(&path).display()))?;
     let connection = parse(&text)?;
@@ -76,7 +82,7 @@ fn run(log: Option<File>) -> Result<()> {
         }
     };
 
-    let code = launcher::run(&freerdp, &host, port, &connection, log)?;
+    let code = launcher::run(&freerdp, &host, port, &connection, log, console)?;
 
     // The tunnel threads end with the process.
     std::process::exit(code);
@@ -130,8 +136,9 @@ pub fn normalize_fingerprint(fingerprint: &str) -> String {
 }
 
 /// Logs to `%LOCALAPPDATA%\vds-connect\vds-connect.log` on Windows and the temporary
-/// directory elsewhere. Returns another handle to the log file for FreeRDP's output.
-fn init_logging() -> Option<File> {
+/// directory elsewhere, and to stderr as well when `console`. Returns another handle to the log
+/// file for FreeRDP's output.
+fn init_logging(console: bool) -> Option<File> {
     #[cfg(windows)]
     let dir = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -140,18 +147,22 @@ fn init_logging() -> Option<File> {
     #[cfg(not(windows))]
     let dir = std::env::temp_dir();
 
-    fs::create_dir_all(&dir).ok()?;
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join("vds-connect.log"))
-        .ok()?;
-    let child_output = file.try_clone().ok();
+    let file = fs::create_dir_all(&dir).ok().and_then(|()| {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("vds-connect.log"))
+            .ok()
+    });
+    let child_output = file.as_ref().and_then(|file| file.try_clone().ok());
 
-    tracing_subscriber::fmt()
-        .with_ansi(false)
-        .with_writer(Mutex::new(file))
-        .init();
+    let subscriber = tracing_subscriber::fmt().with_ansi(false);
+    match (file, console) {
+        (Some(file), true) => subscriber.with_writer(Mutex::new(file).and(std::io::stderr)).init(),
+        (Some(file), false) => subscriber.with_writer(Mutex::new(file)).init(),
+        (None, true) => subscriber.with_writer(std::io::stderr).init(),
+        (None, false) => {}
+    }
 
     child_output
 }

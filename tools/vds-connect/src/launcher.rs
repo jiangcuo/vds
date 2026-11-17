@@ -9,7 +9,14 @@ use anyhow::{Context as _, Result};
 use crate::{normalize_fingerprint, Connection};
 
 /// Returns FreeRDP's exit code.
-pub fn run(freerdp: &Path, host: &str, port: u16, connection: &Connection, log: Option<File>) -> Result<i32> {
+pub fn run(
+    freerdp: &Path,
+    host: &str,
+    port: u16,
+    connection: &Connection,
+    log: Option<File>,
+    console: bool,
+) -> Result<i32> {
     let host = if host.contains(':') { format!("[{host}]") } else { host.to_owned() };
 
     let mut command = Command::new(freerdp);
@@ -31,8 +38,10 @@ pub fn run(freerdp: &Path, host: &str, port: u16, connection: &Connection, log: 
         command.args(extra);
     }
 
-    // FreeRDP's own output goes to our log.
-    if let Some(log) = log {
+    // FreeRDP's own output goes to the terminal we run in, or else to our log.
+    if console {
+        // inherited
+    } else if let Some(log) = log {
         if let Ok(stderr) = log.try_clone() {
             command.stdout(log).stderr(stderr);
         }
