@@ -261,30 +261,32 @@ impl Wire {
 
         let mut session = session.lock().unwrap_or_else(PoisonError::into_inner);
         let mut received = &chunk[..n];
+        let mut open = true;
         while !received.is_empty() {
             session.read_tls(&mut received)?;
             session
                 .process_new_packets()
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        }
-
-        let mut open = true;
-        loop {
-            match session.reader().read(&mut chunk) {
-                // close_notify
-                Ok(0) => {
-                    open = false;
-                    break;
-                }
-                Ok(m) => buf.extend_from_slice(&chunk[..m]),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => return Err(error),
-            }
+            // Before more records: rustls holds at most 16 KiB of plaintext not read yet.
+            open = drain_plaintext(&mut session, buf)? && open;
         }
 
         // Alerts or key updates produced while reading.
         flush_tls(&mut session, socket)?;
         Ok(open)
+    }
+}
+
+/// Moves the decrypted bytes to `buf`; returns `false` once the relay sent close_notify.
+fn drain_plaintext(session: &mut ClientConnection, buf: &mut Vec<u8>) -> io::Result<bool> {
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        match session.reader().read(&mut chunk) {
+            Ok(0) => return Ok(false),
+            Ok(m) => buf.extend_from_slice(&chunk[..m]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(true),
+            Err(error) => return Err(error),
+        }
     }
 }
 
